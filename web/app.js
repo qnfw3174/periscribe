@@ -423,6 +423,94 @@
   document.getElementById("reload").addEventListener("click", loadHistory);
   if (loadMoreBtn) loadMoreBtn.addEventListener("click", loadMore);
 
+  // ---------- 머신 헬스(하트비트) ----------
+  const healthBar = document.getElementById("health-bar");
+  const machineMap = new Map();
+  const HEALTH_ONLINE_MS = 75000; // last_seen이 이 이내면 온라인(heartbeat 30s 기준 여유)
+
+  function relTime(iso) {
+    const ms = Date.parse(iso);
+    if (isNaN(ms)) return "";
+    const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    if (s < 5) return "방금";
+    if (s < 60) return `${s}초 전`;
+    if (s < 3600) return `${Math.floor(s / 60)}분 전`;
+    return `${Math.floor(s / 3600)}시간 전`;
+  }
+  function renderHealth() {
+    if (!healthBar) return;
+    const list = Array.from(machineMap.values()).sort((a, b) => (a.machine_id < b.machine_id ? -1 : 1));
+    if (list.length === 0) {
+      healthBar.innerHTML = '<span class="health-empty">연결된 Collector 없음</span>';
+      return;
+    }
+    healthBar.innerHTML = list.map((m) => {
+      const ageMs = Date.now() - Date.parse(m.last_seen || 0);
+      const online = ageMs >= 0 && ageMs < HEALTH_ONLINE_MS;
+      return `<span class="machine-chip ${online ? "online" : "stale"}" title="${esc(m.platform || "")} · v${esc(m.collector_version || "?")}">` +
+        `<span class="mdot"></span><span class="mname">${esc(m.machine_id)}</span>` +
+        `<span class="mseen">${online ? "온라인" : relTime(m.last_seen)}</span></span>`;
+    }).join("");
+  }
+  async function loadMachines() {
+    const { data, error } = await client.from("machines").select("*");
+    if (!error) { for (const m of data || []) machineMap.set(m.machine_id, m); renderHealth(); }
+  }
+  function subscribeMachines() {
+    client.channel("periscribe-machines")
+      .on("postgres_changes", { event: "*", schema: "public", table: "machines" }, (p) => {
+        const m = p.new;
+        if (m && m.machine_id) { machineMap.set(m.machine_id, m); renderHealth(); }
+      }).subscribe();
+  }
+  setInterval(renderHealth, 5000); // 상대시간/온라인 상태 주기 갱신
+
+  // ---------- 인증 게이트 ----------
+  let appStarted = false;
+  function initApp() {
+    if (appStarted) return;
+    appStarted = true;
+    loadHistory().then(subscribe);
+    loadMachines().then(subscribeMachines);
+  }
+  function showAuthed(session) {
+    document.body.classList.add("authed");
+    const ub = document.getElementById("user-box");
+    if (ub) ub.style.display = "";
+    const ue = document.getElementById("user-email");
+    if (ue && session && session.user) ue.textContent = session.user.email || "";
+    initApp();
+  }
+  function showLogin() {
+    document.body.classList.remove("authed");
+    const ub = document.getElementById("user-box");
+    if (ub) ub.style.display = "none";
+  }
+
+  const loginForm = document.getElementById("login-form");
+  const loginError = document.getElementById("login-error");
+  if (loginForm) loginForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    loginError.textContent = "";
+    const email = document.getElementById("login-email").value.trim();
+    const password = document.getElementById("login-password").value;
+    const btn = document.getElementById("login-btn");
+    btn.disabled = true; btn.textContent = "로그인 중…";
+    const { error } = await client.auth.signInWithPassword({ email, password });
+    btn.disabled = false; btn.textContent = "로그인";
+    if (error) loginError.textContent = "로그인 실패: " + error.message;
+  });
+  const logoutBtn = document.getElementById("logout");
+  if (logoutBtn) logoutBtn.addEventListener("click", async () => {
+    await client.auth.signOut();
+    location.reload();
+  });
+
   // ---------- 시작 ----------
-  loadHistory().then(subscribe);
+  client.auth.getSession().then(({ data: { session } }) => {
+    if (session) showAuthed(session); else showLogin();
+  });
+  client.auth.onAuthStateChange((_event, session) => {
+    if (session) showAuthed(session); else showLogin();
+  });
 })();

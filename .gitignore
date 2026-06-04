@@ -10,6 +10,10 @@ web/config.js
 *.offset.json
 checkpoints/
 
+# Collector logs
+logs/
+*.log
+
 # --- Python ---
 __pycache__/
 *.py[cod]

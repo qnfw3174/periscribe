@@ -46,13 +46,21 @@ class Config:
     store_thinking: bool = False     # thinking 블록 저장 여부(기본 무시)
     redact: bool = False             # 수집 단계 민감정보 마스킹(토큰/키/비번 패턴)
 
+    # 헬스(하트비트) — machines 테이블에 주기적 upsert. 0이면 비활성.
+    heartbeat_interval: float = 30.0
+    # 파일 로그(서비스/무콘솔 모드 진단용). 비우면 stderr만. 크기 기반 로테이션.
+    log_file: str = ""
+    log_max_bytes: int = 5_000_000   # 로테이션 임계(파일당)
+    log_backups: int = 3
+
     # ---- 로드 ----
     @classmethod
     def load(cls, path: Optional[str] = None) -> "Config":
         data: dict[str, Any] = {}
         cfg_path = Path(path) if path else Path("config.json")
         if cfg_path.is_file():
-            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            # utf-8-sig: PowerShell/에디터가 붙인 UTF-8 BOM이 있어도 안전하게 처리.
+            data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
 
         cfg = cls()
         for key in vars(cfg):

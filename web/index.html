@@ -15,10 +15,29 @@
     <div class="status">
       <span id="conn-dot" class="dot dot--off"></span>
       <span id="conn-text">연결 대기</span>
+      <span id="user-box" class="user-box" style="display:none">
+        <span id="user-email" class="user-email"></span>
+        <button id="logout" class="btn ghost btn-sm">로그아웃</button>
+      </span>
     </div>
   </header>
 
-  <section class="filters">
+  <!-- 로그인 게이트: 인증 전엔 이것만 보인다 -->
+  <div id="login-gate" class="login-gate">
+    <form id="login-form" class="login-card" autocomplete="on">
+      <div class="login-title"><span class="logo">⌖</span> Periscribe</div>
+      <div class="login-sub">로그인이 필요합니다</div>
+      <input id="login-email" type="email" placeholder="이메일" autocomplete="username" required />
+      <input id="login-password" type="password" placeholder="비밀번호" autocomplete="current-password" required />
+      <button id="login-btn" type="submit" class="btn">로그인</button>
+      <div id="login-error" class="login-error"></div>
+    </form>
+  </div>
+
+  <!-- 머신 헬스(하트비트) 바 -->
+  <div id="health-bar" class="health-bar needs-auth"></div>
+
+  <section class="filters needs-auth">
     <label>머신
       <select id="f-machine"><option value="">전체</option></select>
     </label>
@@ -52,11 +71,11 @@
     <span id="count" class="count"></span>
   </section>
 
-  <div class="loadmore-bar">
+  <div class="loadmore-bar needs-auth">
     <button id="load-more" class="btn ghost" style="display:none">↑ 더 불러오기 (과거)</button>
   </div>
 
-  <main id="feed" class="feed">
+  <main id="feed" class="feed needs-auth">
     <div class="empty" id="empty">설정을 확인하는 중…</div>
   </main>
 

@@ -49,6 +49,52 @@ body { margin: 0; background: var(--bg); color: var(--text); }
 .btn:hover { filter: brightness(1.08); }
 .count { margin-left: auto; color: var(--muted); font-size: 12px; }
 
+/* ---- 인증 게이트 ---- */
+.user-box { display: inline-flex; align-items: center; gap: 8px; margin-left: 8px; }
+.user-email { color: var(--muted); font-size: 12px; }
+.btn-sm { padding: 3px 8px; font-size: 12px; }
+/* 인증 전: needs-auth 숨김, 게이트 표시. 인증 후 각 요소를 제 display로 복원. */
+.needs-auth { display: none; }
+body.authed .filters { display: flex; }
+body.authed .feed { display: flex; }
+body.authed .loadmore-bar { display: block; }
+body.authed .health-bar { display: flex; }
+body.authed #login-gate { display: none; }
+
+.login-gate {
+  position: fixed; inset: 0; z-index: 100; display: flex;
+  align-items: center; justify-content: center; background: var(--bg);
+}
+.login-card {
+  display: flex; flex-direction: column; gap: 10px; width: 300px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 28px 24px;
+}
+.login-title { font-size: 20px; font-weight: 700; }
+.login-title .logo { color: var(--accent); }
+.login-sub { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+.login-card input {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 9px 11px; font-size: 14px;
+}
+.login-card .btn { margin-top: 4px; padding: 9px; }
+.login-error { color: var(--error); font-size: 12px; min-height: 14px; }
+
+/* ---- 머신 헬스 바 ---- */
+.health-bar {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 8px 16px; background: var(--panel-2); border-bottom: 1px solid var(--border);
+}
+.machine-chip {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 14px; padding: 3px 10px;
+}
+.machine-chip .mdot { width: 8px; height: 8px; border-radius: 50%; }
+.machine-chip.online .mdot { background: var(--ok); box-shadow: 0 0 5px var(--ok); }
+.machine-chip.stale .mdot { background: #666; }
+.machine-chip .mname { font-weight: 600; }
+.machine-chip .mseen { color: var(--muted); }
+.health-empty { color: var(--muted); font-size: 12px; }
+
 .loadmore-bar { text-align: center; padding: 10px 16px 0; }
 .btn.ghost {
   background: transparent; color: var(--accent); border: 1px solid var(--border);

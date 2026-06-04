@@ -22,5 +22,14 @@
 
   "store_raw": false,
   "store_thinking": false,
-  "redact": false
+  "redact": false,
+  "_redact_help": "클라우드 저장 민감정보 마스킹. 멀티 PC/공개 배포 시 true 권장.",
+
+  "heartbeat_interval": 30,
+  "_heartbeat_help": "machines 테이블에 살아있음 신호 주기(초). 0이면 비활성.",
+
+  "log_file": "",
+  "_log_file_help": "서비스/무콘솔 모드 진단용 로그 파일 경로(예: logs/collector.log). 비우면 stderr만.",
+  "log_max_bytes": 5000000,
+  "log_backups": 3
 }

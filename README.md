@@ -62,13 +62,17 @@ python -m http.server 8080
 ```
 
 ## 보안 원칙
-- Collector 쓰기 키는 **로컬에만**, 절대 웹 페이지에 넣지 않음.
-- Web UI는 **anon 키 + read-only RLS**.
-- transcript엔 자격증명이 섞일 수 있음 → 전용 프로젝트 + RLS 활성화. 필요 시 수집 단계 레닥션(`redact` 설정) 사용.
+- Collector 쓰기 키(service_role)는 **각 PC 로컬에만**, 절대 웹/깃에 넣지 않음.
+- Web UI는 **anon 키 + 인증(authenticated) 전용 읽기 RLS** → 로그인 없이는 아무것도 못 읽음(공개 배포 안전장치).
+- transcript엔 자격증명이 섞일 수 있음 → 전용 프로젝트 + RLS + 수집 단계 레닥션(`redact`) 권장.
 
-## 멀티 PC
-Collector를 각 PC에 설치하고 `machine_id`만 다르게 부여하면 끝. 같은 `events` 테이블로
-적재되고 UI에서 `machine_id`로 구분·필터됩니다.
+## 멀티 PC 배포
+각 PC에 Collector를 설치(작업 스케줄러 자동 실행)하고 Web UI를 Vercel에 공개 배포하는
+전체 절차는 **[docs/DEPLOY.md](./docs/DEPLOY.md)** 참고. 요약:
+- Supabase: `schema.sql` 적용 + 로그인 사용자 생성 + 공개 가입 비활성화
+- Web: Vercel(Root=`web`, 환경변수 `SUPABASE_URL`/`SUPABASE_ANON_KEY`) → 로그인 벽
+- Collector(PC마다): `deploy/windows/install-collector.ps1` → 작업 스케줄러 등록(무콘솔·자동재시작)
+- 운영: 머신 헬스바(하트비트), 파일 로그, 레닥션 ON. `machine_id`(hostname)로 자동 구분.
 
 ## 라이선스
 MIT

@@ -55,12 +55,14 @@ end $$;
 -- =====================================================================
 alter table public.events enable row level security;
 
--- 읽기: anon/authenticated 모두 select 허용 (멀티 사용자 스코핑이 필요하면 USING 절을 좁히세요)
+-- 읽기: 인증 사용자(authenticated)만 허용. 공개 배포(Vercel)에서 anon 키가 노출돼도
+-- 로그인 없이는 데이터를 읽을 수 없게 한다(이게 공개 호스팅의 핵심 안전장치).
+-- Collector는 service_role이라 RLS를 우회해 영향 없음.
 drop policy if exists events_read on public.events;
 create policy events_read
   on public.events
   for select
-  to anon, authenticated
+  to authenticated
   using (true);
 
 -- (선택) service_role 대신 전용 insert-only 키(authenticated 등)를 쓸 경우 활성화:
@@ -88,3 +90,41 @@ create policy events_read
 --
 -- -- pg_cron 예 (매일 03:00):
 -- -- select cron.schedule('periscribe-prune', '0 3 * * *', $$select public.prune_events(30)$$);
+
+-- =====================================================================
+-- 6. machines 테이블 — Collector 하트비트(헬스). 멀티 PC 온라인 상태 표시.
+--    Collector(service_role)가 주기적으로 upsert, Web UI(authenticated)는 읽기만.
+-- =====================================================================
+create table if not exists public.machines (
+  machine_id        text primary key,
+  hostname          text,
+  platform          text,
+  source            text not null default 'claude-code',
+  collector_version text,
+  started_at        timestamptz,
+  last_seen         timestamptz not null default now()
+);
+
+create index if not exists machines_last_seen_idx on public.machines (last_seen);
+
+-- Realtime: UI가 온라인/오프라인 전환을 실시간 반영
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and tablename = 'machines'
+  ) then
+    alter publication supabase_realtime add table public.machines;
+  end if;
+end $$;
+
+alter table public.machines enable row level security;
+
+-- 읽기: 인증 사용자만(events와 동일 정책)
+drop policy if exists machines_read on public.machines;
+create policy machines_read
+  on public.machines
+  for select
+  to authenticated
+  using (true);
+-- 쓰기(upsert)는 Collector의 service_role이 RLS 우회 → 별도 정책 불필요.

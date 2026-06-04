@@ -9,14 +9,17 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .checkpoint import Checkpoint
 from .config import Config
+from .health import HealthReporter
 from .parser import Parser
 from .sink import Sink, SinkError
 from .tailer import Tailer, file_inode, initial_offset
@@ -39,6 +42,21 @@ class Collector:
         self.fresh_start = self.checkpoint.is_empty()
         self.tailers: dict[str, Tailer] = {}
         self._running = False
+
+        # 헬스(하트비트): supabase 키가 있고 interval>0 일 때만 활성(dry-run 등에서는 비활성).
+        self.health: HealthReporter | None = None
+        if config.heartbeat_interval > 0 and config.supabase_url and config.supabase_key:
+            self.health = HealthReporter(
+                url=config.supabase_url, key=config.supabase_key,
+                machine_id=config.machine_id, source=config.source,
+                collector_version=__version__,
+            )
+        self._last_beat = 0.0
+
+        # 파일 로그(선택). 비우면 stderr만 사용.
+        self._log_path = config.log_file or None
+        if self._log_path:
+            Path(self._log_path).parent.mkdir(parents=True, exist_ok=True)
 
     # ---- 파일 발견 ----
     def discover(self) -> list[str]:
@@ -98,17 +116,63 @@ class Collector:
         self.checkpoint.set(file_path, new_offset, tailer.inode)
         return len(events)
 
+    # ---- 로깅 (stderr + 선택적 파일, 크기 기반 로테이션) ----
+    def _log(self, msg: str) -> None:
+        line = msg if msg.endswith("\n") else msg + "\n"
+        print(msg, file=sys.stderr, flush=True)
+        if not self._log_path:
+            return
+        try:
+            self._rotate_if_needed()
+            with open(self._log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError:
+            pass  # 로깅 실패가 수집을 막지 않게
+
+    def _rotate_if_needed(self) -> None:
+        p = self._log_path
+        try:
+            if os.path.getsize(p) < self.config.log_max_bytes:
+                return
+        except OSError:
+            return
+        # p -> p.1 -> p.2 ... (오래된 것 폐기)
+        for i in range(self.config.log_backups, 0, -1):
+            src = p if i == 1 else f"{p}.{i - 1}"
+            dst = f"{p}.{i}"
+            if os.path.exists(src):
+                try:
+                    if os.path.exists(dst):
+                        os.remove(dst)
+                    os.replace(src, dst)
+                except OSError:
+                    pass
+
+    # ---- 하트비트 ----
+    def _maybe_heartbeat(self) -> None:
+        if self.health is None:
+            return
+        now = time.time()
+        if now - self._last_beat < self.config.heartbeat_interval:
+            return
+        try:
+            self.health.beat()
+            self._last_beat = now
+        except Exception as e:
+            self._log(f"[periscribe] 하트비트 실패: {e}")
+
     # ---- 메인 루프 ----
     def run(self) -> None:
         self._running = True
         self._install_signal_handlers()
         first_run = True
-        log = _stderr
-        log(f"[periscribe] watch={self.config.watch_dir} machine_id={self.config.machine_id}")
-        log(f"[periscribe] poll={self.config.poll_interval}s backfill={self.config.backfill}")
+        self._log(f"[periscribe] v{__version__} watch={self.config.watch_dir} machine_id={self.config.machine_id}")
+        self._log(f"[periscribe] poll={self.config.poll_interval}s backfill={self.config.backfill} "
+                  f"redact={self.config.redact} heartbeat={self.config.heartbeat_interval}s")
 
         while self._running:
             try:
+                self._maybe_heartbeat()
                 files = self.discover()
                 total = 0
                 for fp in files:
@@ -116,18 +180,18 @@ class Collector:
                         total += self._process_file(fp, first_run)
                     except SinkError as e:
                         # 네트워크/적재 실패: 이 파일 오프셋은 전진 안 됨. 다음 폴링 재시도.
-                        log(f"[periscribe] sink 실패(재시도 예정): {e}")
+                        self._log(f"[periscribe] sink 실패(재시도 예정): {e}")
                     except Exception as e:
                         # 파일 단위 예외가 전체 루프를 죽이지 않게
-                        log(f"[periscribe] 파일 처리 오류 {fp}: {e}")
+                        self._log(f"[periscribe] 파일 처리 오류 {fp}: {e}")
                 if total:
-                    log(f"[periscribe] +{total} events")
+                    self._log(f"[periscribe] +{total} events")
                 first_run = False
             except Exception as e:
-                log(f"[periscribe] 루프 오류: {e}")
+                self._log(f"[periscribe] 루프 오류: {e}")
             time.sleep(self.config.poll_interval)
 
-        log("[periscribe] 종료")
+        self._log("[periscribe] 종료")
 
     def stop(self, *_: Any) -> None:
         self._running = False
