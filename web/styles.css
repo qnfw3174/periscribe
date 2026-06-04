@@ -1,0 +1,98 @@
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-2: #1d212b;
+  --border: #2a2f3a;
+  --text: #e6e9ef;
+  --muted: #8a93a6;
+  --accent: #6ea8fe;
+  --bash: #f0b429;
+  --error: #ff6b6b;
+  --ok: #4cd585;
+  --user: #b794f6;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+
+.topbar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 10;
+}
+.brand { font-weight: 600; font-size: 16px; }
+.brand .logo { color: var(--accent); margin-right: 4px; }
+.brand .tagline { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 10px; }
+.status { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.dot--off { background: #555; }
+.dot--on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.dot--err { background: var(--error); }
+
+.filters {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  padding: 10px 16px; background: var(--panel-2); border-bottom: 1px solid var(--border);
+  position: sticky; top: 49px; z-index: 9;
+}
+.filters label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
+.filters label.chk { flex-direction: row; align-items: center; gap: 5px; }
+.filters select, .filters input[type="search"] {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 8px; font-size: 13px; min-width: 130px;
+}
+.filters .search input { min-width: 200px; }
+.btn {
+  background: var(--accent); color: #0b0d11; border: none; border-radius: 6px;
+  padding: 6px 12px; font-weight: 600; cursor: pointer; font-size: 13px;
+}
+.btn:hover { filter: brightness(1.08); }
+.count { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+.feed { padding: 14px 16px 60px; display: flex; flex-direction: column; gap: 8px; }
+.empty { color: var(--muted); text-align: center; padding: 40px; }
+
+.event {
+  background: var(--panel); border: 1px solid var(--border); border-left-width: 3px;
+  border-radius: 8px; padding: 8px 12px; animation: fadein .25s ease;
+}
+@keyframes fadein { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; } }
+
+.event__head { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.event__kind { font-weight: 700; letter-spacing: .02em; }
+.event__meta { color: var(--muted); }
+.event__time { margin-left: auto; font-variant-numeric: tabular-nums; }
+.event__body { margin-top: 6px; }
+
+.event--user_prompt { border-left-color: var(--user); }
+.event--assistant_text { border-left-color: var(--accent); }
+.event--tool_use { border-left-color: #5b8def; }
+.event--tool_use.is-bash { border-left-color: var(--bash); }
+.event--tool_result { border-left-color: var(--ok); }
+.event--tool_result.is-error { border-left-color: var(--error); background: #24181a; }
+
+.kind--user_prompt { color: var(--user); }
+.kind--assistant_text { color: var(--accent); }
+.kind--tool_use { color: #7aa2f7; }
+.kind--tool_result { color: var(--ok); }
+.is-error .kind--tool_result, .is-error .event__kind { color: var(--error); }
+
+.tool-badge {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 6px; font-size: 11px; font-weight: 600;
+}
+.tool-badge.bash { background: #3a2e10; color: var(--bash); border-color: #5a4a18; }
+
+pre.code {
+  margin: 0; padding: 8px 10px; background: #0b0d11; border: 1px solid var(--border);
+  border-radius: 6px; overflow-x: auto; font-size: 12.5px; line-height: 1.45;
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace; white-space: pre-wrap;
+  word-break: break-word;
+}
+pre.code.bash { color: var(--bash); }
+.text-body { font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
+.truncated { color: var(--muted); cursor: pointer; font-size: 11px; user-select: none; }
+.truncated:hover { color: var(--accent); }
+.badge-bg { color: var(--bash); font-size: 11px; }
+.sidechain { color: #c792ea; font-size: 11px; }

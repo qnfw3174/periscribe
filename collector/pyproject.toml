@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "periscribe-collector"
+version = "0.1.0"
+description = "Read-only Claude Code transcript collector that ingests into Supabase"
+readme = "../README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+# 런타임 의존성 없음 — 표준 라이브러리만 사용.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+periscribe = "periscribe.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["periscribe*"]

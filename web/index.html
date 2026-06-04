@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Periscribe</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⌖</span> Periscribe
+      <span class="tagline">AI 에이전트를 밖에서 관찰·기록</span>
+    </div>
+    <div class="status">
+      <span id="conn-dot" class="dot dot--off"></span>
+      <span id="conn-text">연결 대기</span>
+    </div>
+  </header>
+
+  <section class="filters">
+    <label>머신
+      <select id="f-machine"><option value="">전체</option></select>
+    </label>
+    <label>세션
+      <select id="f-session"><option value="">전체</option></select>
+    </label>
+    <label>종류
+      <select id="f-kind">
+        <option value="">전체</option>
+        <option value="user_prompt">user_prompt</option>
+        <option value="assistant_text">assistant_text</option>
+        <option value="tool_use">tool_use</option>
+        <option value="tool_result">tool_result</option>
+      </select>
+    </label>
+    <label class="search">검색
+      <input id="f-text" type="search" placeholder="명령/텍스트 포함…" />
+    </label>
+    <label class="chk"><input id="f-errors" type="checkbox" /> 실패만</label>
+    <button id="reload" class="btn">다시 로드</button>
+    <span id="count" class="count"></span>
+  </section>
+
+  <main id="feed" class="feed">
+    <div class="empty" id="empty">설정을 확인하는 중…</div>
+  </main>
+
+  <!-- Supabase JS (CDN). config.js 는 anon 키만 포함 -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

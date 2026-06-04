@@ -1,0 +1,36 @@
+# --- Periscribe ---
+
+# Local secrets / config (never commit write keys)
+collector/config.json
+web/config.js
+.env
+.env.*
+
+# Offset checkpoints
+*.offset.json
+checkpoints/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node (web tooling, if any) ---
+node_modules/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

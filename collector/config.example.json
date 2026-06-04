@@ -1,0 +1,26 @@
+{
+  "_comment": "이 파일을 config.json 으로 복사한 뒤 값을 채우세요. config.json 은 .gitignore 됨(쓰기 키 보호).",
+
+  "watch_dir": "",
+  "_watch_dir_help": "비우면 ~/.claude/projects (Windows: %USERPROFILE%\\.claude\\projects) 자동 사용.",
+
+  "machine_id": "",
+  "_machine_id_help": "비우면 hostname 사용. 멀티 PC면 PC마다 다르게 지정.",
+
+  "poll_interval": 0.4,
+
+  "supabase_url": "https://YOUR-PROJECT.supabase.co",
+  "supabase_key": "YOUR-SERVICE-ROLE-OR-INSERT-KEY",
+  "_supabase_key_help": "service_role 또는 insert 전용 키. 절대 웹 페이지에 넣지 말 것. 로컬에만 보관.",
+  "table": "events",
+  "batch_size": 500,
+
+  "checkpoint_path": "checkpoints/offsets.json",
+
+  "backfill": 0,
+  "_backfill_help": "0이면 기존 파일은 EOF부터(과거 폭주 방지). N>0이면 마지막 N줄 백필.",
+
+  "store_raw": false,
+  "store_thinking": false,
+  "redact": false
+}
