@@ -36,7 +36,8 @@ class SupabaseSink:
             return
         # PostgREST 벌크 insert는 배열 내 모든 객체의 키 집합이 동일해야 한다(PGRST102).
         # 이벤트마다 tool/tool_use_id/is_error/raw 유무가 다르므로 키 합집합으로 정규화.
-        rows = _normalize_rows(events)
+        # Postgres text/jsonb는 NUL 문자를 저장할 수 없다(22P05) -> 직렬화 전 문자열에서 제거.
+        rows = _strip_nul(_normalize_rows(events))
         body = json.dumps(rows, ensure_ascii=False, default=str).encode("utf-8")
         # on_conflict=event_id 로 멱등 upsert(중복 무시)
         url = self.endpoint + "?on_conflict=event_id"
@@ -60,6 +61,17 @@ class SupabaseSink:
         except urllib.error.URLError as e:
             # 네트워크 실패 -> 재시도 대상(오프셋 전진 금지)
             raise SinkError(f"Supabase 연결 실패: {e.reason}") from e
+
+
+def _strip_nul(obj: Any) -> Any:
+    """문자열 값에서 NUL 문자를 재귀적으로 제거(Postgres text/jsonb 미지원, 22P05)."""
+    if isinstance(obj, str):
+        return obj.replace("\x00", "") if "\x00" in obj else obj
+    if isinstance(obj, dict):
+        return {k: _strip_nul(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_nul(v) for v in obj]
+    return obj
 
 
 def _normalize_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -27,6 +27,10 @@ class Checkpoint:
             except Exception:
                 self._state = {}
 
+    def is_empty(self) -> bool:
+        """로드 시점에 저장된 오프셋이 하나도 없으면 True(= 최초 실행)."""
+        return not self._state
+
     def get(self, file_path: str) -> dict[str, Any] | None:
         """{'offset': int, 'inode': int} 또는 None."""
         return self._state.get(file_path)

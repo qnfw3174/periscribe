@@ -34,6 +34,9 @@ class Collector:
             redact=config.redact,
         )
         self.checkpoint = Checkpoint(config.checkpoint_path)
+        # 체크포인트가 비어 있으면 "이 PC 최초 실행"(과거 폭주 방지 EOF/backfill 적용 대상).
+        # 비어 있지 않으면 "재시작" → 체크포인트 없는 새 파일은 처음부터 읽어 다운타임 세션을 놓치지 않음.
+        self.fresh_start = self.checkpoint.is_empty()
         self.tailers: dict[str, Tailer] = {}
         self._running = False
 
@@ -55,9 +58,10 @@ class Collector:
 
         saved = self.checkpoint.get(file_path)
         if saved is not None:
+            # 이미 추적하던 파일: 마지막 확정 오프셋부터 재개(다운타임 중 늘어난 분 포함).
             tailer = Tailer(file_path, offset=saved.get("offset", 0), inode=saved.get("inode"))
-        elif first_run:
-            # 기존 파일: 기본 EOF부터(또는 backfill)
+        elif first_run and self.fresh_start:
+            # 이 PC 최초 실행 시점에 이미 있던 파일: 기본 EOF부터(또는 backfill). 과거 폭주 방지.
             off = initial_offset(file_path, self.config.backfill)
             try:
                 ino = file_inode(file_path)
@@ -65,7 +69,8 @@ class Collector:
                 ino = 0
             tailer = Tailer(file_path, offset=off, inode=ino)
         else:
-            # 실행 중 새로 생긴 파일: 처음부터
+            # 처음부터: (a) 실행 중 새로 생긴 파일, (b) 재시작 시 체크포인트 없는 새 파일
+            #          (= collector 꺼져 있는 동안 시작된 세션). 둘 다 통째로 수집.
             tailer = Tailer(file_path, offset=0)
 
         self.tailers[file_path] = tailer
