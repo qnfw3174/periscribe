@@ -128,3 +128,21 @@ create policy machines_read
   to authenticated
   using (true);
 -- 쓰기(upsert)는 Collector의 service_role이 RLS 우회 → 별도 정책 불필요.
+
+-- =====================================================================
+-- 7. sessions 뷰 — 필터 드롭다운(세션/머신)을 DB 전체에서 채우기 위함.
+--    security_invoker=true 로 events의 RLS(authenticated 전용)를 상속한다.
+-- =====================================================================
+create or replace view public.sessions with (security_invoker = true) as
+select
+  session_id,
+  (array_agg(machine_id order by received_at desc))[1] as machine_id,
+  (array_agg(project    order by received_at desc))[1] as project,
+  count(*)::int as event_count,
+  min(ts) as first_ts,
+  max(ts) as last_ts,
+  max(received_at) as last_received
+from public.events
+group by session_id;
+
+grant select on public.sessions to authenticated;

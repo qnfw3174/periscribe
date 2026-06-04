@@ -268,17 +268,45 @@
     return true;
   }
 
+  // 카테고리는 클라이언트 분류 결과라 로드된 이벤트에서 채운다.
+  // 머신/세션은 DB 전체에서 채운다(loadFilterOptions) → 로드 안 된 과거 세션도 선택 가능.
   function refreshFilterOptions() {
-    const machines = new Set(), sessions = new Set(), cats = new Set();
+    const cats = new Set();
     for (const ev of store.values()) {
-      if (ev.machine_id) machines.add(ev.machine_id);
-      if (ev.session_id) sessions.add(ev.session_id);
       const c = categoryOf(ev);
       if (c) cats.add(c);
     }
-    syncSelect(F.machine, machines);
-    syncSelect(F.session, sessions, 8);
     syncSelect(F.category, cats);
+  }
+
+  const knownSessions = new Set();
+  function shortProject(p) {
+    if (!p) return "";
+    const seg = String(p).split(/[\/\\]/).filter(Boolean).pop() || p;
+    return seg.length > 20 ? seg.slice(0, 20) + "…" : seg;
+  }
+  async function loadFilterOptions() {
+    // 세션: DB 전체(sessions 뷰)에서 최신순
+    const { data: sess } = await client.from("sessions").select("*").order("last_received", { ascending: false });
+    if (sess) {
+      const cur = F.session.value;
+      while (F.session.options.length > 1) F.session.remove(1);
+      const machineSet = new Set();
+      for (const s of sess) {
+        knownSessions.add(s.session_id);
+        if (s.machine_id) machineSet.add(s.machine_id);
+        const o = document.createElement("option");
+        o.value = s.session_id;
+        const proj = s.project ? " · " + shortProject(s.project) : "";
+        o.textContent = `${String(s.session_id).slice(0, 8)} · ${s.event_count}건${proj}`;
+        F.session.appendChild(o);
+      }
+      if ([...F.session.options].some((o) => o.value === cur)) F.session.value = cur;
+      // 머신: machines 테이블 + 세션의 machine_id 합집합
+      const { data: mac } = await client.from("machines").select("machine_id");
+      if (mac) for (const m of mac) if (m.machine_id) machineSet.add(m.machine_id);
+      syncSelect(F.machine, machineSet);
+    }
   }
   function syncSelect(sel, values, sliceLabel) {
     const cur = sel.value;
@@ -329,16 +357,20 @@
   let dbTotal = null;        // DB 총 건수(표시용)
 
   // 현재 서버측 필터를 적용한 기본 쿼리(최근순, pageSize 제한). received_at 동률은 event_id로 안정 정렬.
-  function baseQuery() {
-    let q = client.from(table).select("*")
-      .order("received_at", { ascending: false })
-      .order("event_id", { ascending: false })
-      .limit(pageSize);
+  function applyServerFilters(q) {
     if (F.machine.value) q = q.eq("machine_id", F.machine.value);
     if (F.session.value) q = q.eq("session_id", F.session.value);
     if (F.kind.value) q = q.eq("kind", F.kind.value);
     if (F.errors.checked) q = q.eq("is_error", true);
     return q;
+  }
+  function baseQuery() {
+    return applyServerFilters(
+      client.from(table).select("*")
+        .order("received_at", { ascending: false })
+        .order("event_id", { ascending: false })
+        .limit(pageSize)
+    );
   }
 
   function applyPage(rows) {
@@ -360,8 +392,8 @@
   async function loadHistory() {
     setConn("off", "과거 로드 중…");
     curRecv = null; curId = null; reachedEnd = false; store.clear();
-    // DB 총 건수(머리 count) — UI 로드분과 비교용
-    const cnt = await client.from(table).select("*", { count: "exact", head: true });
+    // DB 건수(머리 count, 현재 서버 필터 반영) — UI 로드분과 비교용
+    const cnt = await applyServerFilters(client.from(table).select("*", { count: "exact", head: true }));
     dbTotal = (cnt && typeof cnt.count === "number") ? cnt.count : null;
 
     const { data, error } = await baseQuery();
@@ -397,6 +429,11 @@
       .on("postgres_changes", { event: "INSERT", schema: "public", table: table }, (payload) => {
         upsert(payload.new);
         if (dbTotal != null) dbTotal += 1;
+        // 새 세션이 생기면 세션 드롭다운을 DB 전체 기준으로 갱신
+        if (payload.new && payload.new.session_id && !knownSessions.has(payload.new.session_id)) {
+          knownSessions.add(payload.new.session_id);
+          loadFilterOptions();
+        }
         refreshFilterOptions();
         render(true);  // 새 이벤트는 맨 아래 → 따라가기
       })
@@ -418,7 +455,11 @@
     clearTimeout(textDebounce);
     textDebounce = setTimeout(() => render(false), 150);
   });
-  [F.machine, F.session, F.kind, F.severity, F.category, F.errors].forEach((el) =>
+  // 머신/세션/종류/실패 = 서버측 필터 → DB에서 다시 조회(로드 안 된 세션도 가져옴).
+  [F.machine, F.session, F.kind, F.errors].forEach((el) =>
+    el.addEventListener("change", loadHistory));
+  // 심각도/카테고리 = 클라이언트 분류 → 로드된 것에서 즉시 필터.
+  [F.severity, F.category].forEach((el) =>
     el.addEventListener("change", () => render(false)));
   document.getElementById("reload").addEventListener("click", loadHistory);
   if (loadMoreBtn) loadMoreBtn.addEventListener("click", loadMore);
@@ -470,6 +511,7 @@
   function initApp() {
     if (appStarted) return;
     appStarted = true;
+    loadFilterOptions();                 // DB 전체 세션/머신으로 드롭다운 채움
     loadHistory().then(subscribe);
     loadMachines().then(subscribeMachines);
   }
