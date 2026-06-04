@@ -50,9 +50,19 @@
     return d.toLocaleTimeString([], { hour12: false }) + "." +
       String(d.getMilliseconds()).padStart(3, "0");
   }
-  function sortKey(ev) {
-    // 머신 간 통합 순서는 received_at, 동일 세션 내는 ts. received_at 우선.
-    return (ev.received_at || ev.ts || "") + "|" + (ev.event_id || "");
+  function eventTime(ev) {
+    // 실제 발생 시각(ts)을 진짜 시간순 기준으로 사용. 백필돼도 세션 진행 순서가 유지된다.
+    // (received_at은 Collector 수신 시각이라 백필 시 한꺼번에 찍혀 순서가 뭉개짐.)
+    // ts가 없을 때만 received_at으로 폴백. 문자열이 아니라 ms로 변환해 정확히 비교.
+    const ms = Date.parse(ev.ts || ev.received_at || "");
+    return isNaN(ms) ? 0 : ms;
+  }
+  function cmpEvents(a, b) {
+    const d = eventTime(a) - eventTime(b);
+    if (d !== 0) return d;
+    // 동시각(같은 줄의 멀티블록 등): event_id로 안정 정렬(uuid#0 < uuid#1 → 블록 순서 보존).
+    const ai = a.event_id || "", bi = b.event_id || "";
+    return ai < bi ? -1 : ai > bi ? 1 : 0;
   }
 
   // ---------- 렌더 ----------
@@ -291,7 +301,7 @@
 
   function render(scrollBottom) {
     const list = Array.from(store.values()).filter(passesFilter);
-    list.sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : 1));
+    list.sort(cmpEvents);
     feedEl.innerHTML = "";
     if (list.length === 0) {
       feedEl.appendChild(emptyEl);
