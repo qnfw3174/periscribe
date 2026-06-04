@@ -49,6 +49,13 @@ body { margin: 0; background: var(--bg); color: var(--text); }
 .btn:hover { filter: brightness(1.08); }
 .count { margin-left: auto; color: var(--muted); font-size: 12px; }
 
+.loadmore-bar { text-align: center; padding: 10px 16px 0; }
+.btn.ghost {
+  background: transparent; color: var(--accent); border: 1px solid var(--border);
+  font-weight: 600;
+}
+.btn.ghost:hover { background: var(--panel-2); filter: none; }
+
 .feed { padding: 14px 16px 60px; display: flex; flex-direction: column; gap: 8px; }
 .empty { color: var(--muted); text-align: center; padding: 40px; }
 

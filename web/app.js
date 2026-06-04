@@ -284,21 +284,26 @@
     if (wanted.indexOf(cur) !== -1) sel.value = cur;
   }
 
-  function render() {
+  function countText(shown) {
+    const totalStr = dbTotal != null ? ` · DB ${dbTotal}건` : "";
+    return `로드 ${store.size}건 중 ${shown}개 표시${totalStr}`;
+  }
+
+  function render(scrollBottom) {
     const list = Array.from(store.values()).filter(passesFilter);
     list.sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : 1));
     feedEl.innerHTML = "";
     if (list.length === 0) {
       feedEl.appendChild(emptyEl);
       emptyEl.textContent = store.size === 0 ? "이벤트 없음. Collector 가 도는지 확인하세요." : "필터에 맞는 이벤트 없음.";
-      countEl.textContent = `${store.size}개 중 0개`;
+      countEl.textContent = countText(0);
       return;
     }
     const frag = document.createDocumentFragment();
     for (const ev of list) frag.appendChild(eventNode(ev));
     feedEl.appendChild(frag);
-    countEl.textContent = `${store.size}개 중 ${list.length}개 표시`;
-    window.scrollTo(0, document.body.scrollHeight);
+    countEl.textContent = countText(list.length);
+    if (scrollBottom) window.scrollTo(0, document.body.scrollHeight);
   }
 
   // ---------- 데이터 ----------
@@ -307,31 +312,83 @@
     store.set(ev.event_id, ev); // 멱등
   }
 
-  async function loadHistory() {
-    setConn("off", "과거 로드 중…");
-    let q = client.from(table).select("*").order("received_at", { ascending: false }).limit(pageSize);
+  // ---------- 페이지네이션(과거 더 불러오기) ----------
+  // 복합 키셋 커서 (received_at, event_id): received_at 동률이 있어도 누락/중복 없음.
+  let curRecv = null, curId = null;
+  let reachedEnd = false;    // 더 불러올 과거가 없음
+  let dbTotal = null;        // DB 총 건수(표시용)
+
+  // 현재 서버측 필터를 적용한 기본 쿼리(최근순, pageSize 제한). received_at 동률은 event_id로 안정 정렬.
+  function baseQuery() {
+    let q = client.from(table).select("*")
+      .order("received_at", { ascending: false })
+      .order("event_id", { ascending: false })
+      .limit(pageSize);
     if (F.machine.value) q = q.eq("machine_id", F.machine.value);
     if (F.session.value) q = q.eq("session_id", F.session.value);
     if (F.kind.value) q = q.eq("kind", F.kind.value);
     if (F.errors.checked) q = q.eq("is_error", true);
-    const { data, error } = await q;
+    return q;
+  }
+
+  function applyPage(rows) {
+    for (const ev of rows) upsert(ev);
+    if (rows.length) {
+      const last = rows[rows.length - 1];
+      curRecv = last.received_at; curId = last.event_id;
+    }
+    if (rows.length < pageSize) reachedEnd = true;
+  }
+
+  function updateLoadMore() {
+    if (!loadMoreBtn) return;
+    loadMoreBtn.style.display = reachedEnd ? "none" : "";
+    loadMoreBtn.disabled = false;
+    loadMoreBtn.textContent = "↑ 더 불러오기 (과거)";
+  }
+
+  async function loadHistory() {
+    setConn("off", "과거 로드 중…");
+    curRecv = null; curId = null; reachedEnd = false; store.clear();
+    // DB 총 건수(머리 count) — UI 로드분과 비교용
+    const cnt = await client.from(table).select("*", { count: "exact", head: true });
+    dbTotal = (cnt && typeof cnt.count === "number") ? cnt.count : null;
+
+    const { data, error } = await baseQuery();
     if (error) {
       setConn("err", "조회 오류: " + error.message);
       emptyEl.textContent = "조회 오류: " + error.message + " (anon 키/RLS 확인)";
       return;
     }
-    for (const ev of data || []) upsert(ev);
+    applyPage(data || []);
     refreshFilterOptions();
-    render();
+    render(true);
+    updateLoadMore();
     setConn("on", "실시간 구독 중");
+  }
+
+  async function loadMore() {
+    if (reachedEnd || curRecv == null) return;
+    loadMoreBtn.disabled = true;
+    loadMoreBtn.textContent = "불러오는 중…";
+    // received_at < cur  OR  (received_at == cur AND event_id < curId) — 동률 경계 누락 방지
+    const { data, error } = await baseQuery().or(
+      `received_at.lt.${curRecv},and(received_at.eq.${curRecv},event_id.lt.${curId})`
+    );
+    if (error) { updateLoadMore(); return; }
+    applyPage(data || []);
+    refreshFilterOptions();
+    render(false);  // 과거를 위로 붙이므로 스크롤 위치 유지
+    updateLoadMore();
   }
 
   function subscribe() {
     client.channel("periscribe-events")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: table }, (payload) => {
         upsert(payload.new);
+        if (dbTotal != null) dbTotal += 1;
         refreshFilterOptions();
-        render();
+        render(true);  // 새 이벤트는 맨 아래 → 따라가기
       })
       .subscribe((status) => {
         if (status === "SUBSCRIBED") setConn("on", "실시간 구독 중");
@@ -345,14 +402,16 @@
   }
 
   // ---------- 이벤트 바인딩 ----------
+  const loadMoreBtn = document.getElementById("load-more");
   let textDebounce;
   F.text.addEventListener("input", () => {
     clearTimeout(textDebounce);
-    textDebounce = setTimeout(render, 150);
+    textDebounce = setTimeout(() => render(false), 150);
   });
   [F.machine, F.session, F.kind, F.severity, F.category, F.errors].forEach((el) =>
-    el.addEventListener("change", render));
+    el.addEventListener("change", () => render(false)));
   document.getElementById("reload").addEventListener("click", loadHistory);
+  if (loadMoreBtn) loadMoreBtn.addEventListener("click", loadMore);
 
   // ---------- 시작 ----------
   loadHistory().then(subscribe);
