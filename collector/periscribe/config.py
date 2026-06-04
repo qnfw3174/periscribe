@@ -56,8 +56,15 @@ class Config:
 
         cfg = cls()
         for key in vars(cfg):
-            if key in data and data[key] is not None:
-                setattr(cfg, key, data[key])
+            if key not in data:
+                continue
+            val = data[key]
+            if val is None:
+                continue
+            # 빈 문자열은 "미지정"으로 보고 기본값(hostname/기본 감시 경로 등)을 유지한다.
+            if isinstance(val, str) and val.strip() == "":
+                continue
+            setattr(cfg, key, val)
 
         # 환경변수 override (PERISCRIBE_<UPPER>)
         for key in vars(cfg):
