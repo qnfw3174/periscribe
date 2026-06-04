@@ -92,6 +92,20 @@ pre.code {
 pre.code.bash { color: var(--bash); }
 .text-body { font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 
+/* 심각도 배지 / 카테고리 칩 / 크리티컬 강조 */
+.sev-badge {
+  font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 10px;
+  border: 1px solid transparent; letter-spacing: .02em;
+}
+.sev-badge.critical { background: #3a1518; color: var(--error); border-color: #6b2530; }
+.sev-badge.warning { background: #3a2e10; color: var(--bash); border-color: #5a4a18; }
+.cat-chip {
+  font-size: 10.5px; color: var(--muted); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; text-transform: uppercase;
+}
+/* 크리티컬 = 굵은 좌측 빨강 보더 + 살짝 밝은 배경(실패 결과의 본문-빨강과 구분) */
+.event.is-critical { border-left-color: var(--error) !important; border-left-width: 5px; background: #1d1517; }
+
 .truncated { color: var(--muted); cursor: pointer; font-size: 11px; user-select: none; }
 .truncated:hover { color: var(--accent); }
 .badge-bg { color: var(--bash); font-size: 11px; }
