@@ -1,0 +1,30 @@
+{
+  "name": "periscribe-sandboxed-agent",
+  "build": { "dockerfile": "Dockerfile" },
+  "workspaceFolder": "/workspace",
+
+  // 워크스페이스만 마운트 → 호스트 파일 중 이 폴더만 보임(= 파일시스템 격리).
+  // 호스트의 ~/.ssh, ~/.aws, 다른 레포, 시스템 경로는 마운트 안 하므로 컨테이너에서 안 보인다.
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+
+  "mounts": [
+    // §8(a) transcript 바인드마운트: 컨테이너의 ~/.claude/projects 를 호스트
+    //   %USERPROFILE%\periscribe-agents\<이름> 으로 → 호스트 Collector가 그대로 수집.
+    //   <이름>(=워크스페이스 폴더명)이 곧 container_id. (mac/Linux면 USERPROFILE→HOME)
+    "source=${localEnv:USERPROFILE}/periscribe-agents/${localWorkspaceFolderBasename},target=/home/node/.claude/projects,type=bind"
+  ],
+
+  "remoteUser": "node",
+
+  "runArgs": [
+    "--cap-drop=ALL"
+    // 네트워킹/egress 제한은 이번 범위 밖. Claude Code는 api.anthropic.com 접근이 필요하므로
+    // "--network=none"은 쓰지 않는다. egress allowlist(stage 1)가 필요하면 Squid/iptables 프록시를
+    // 별도 서비스로 두고 여기서 그 네트워크에 붙인다.
+  ]
+
+  // 사용 메모:
+  // 1) 호스트 Collector config의 container_root 를 %USERPROFILE%\periscribe-agents 로 설정.
+  // 2) 컨테이너에서 Claude Code 인증(ANTHROPIC_API_KEY 또는 로그인)은 별도.
+  // 3) FS 격리 확인: 컨테이너 안에서 워크스페이스 밖 호스트 파일(~/.ssh 등) 접근 불가.
+}

@@ -25,6 +25,10 @@ class Config:
     watch_dir: str = field(default_factory=_default_watch_dir)
     poll_interval: float = 0.4  # 초. 0.3~0.5 권장(spec §2.2)
 
+    # 컨테이너(devcontainer) transcript 루트. 비우면 컨테이너 기능 off.
+    # 하위 첫 폴더명이 container_id (예: <root>/<container_id>/<proj>/<session>.jsonl).
+    container_root: str = ""
+
     # 식별
     machine_id: str = field(default_factory=socket.gethostname)
     source: str = "claude-code"

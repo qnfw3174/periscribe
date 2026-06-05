@@ -53,14 +53,30 @@ class Collector:
 
     # ---- 파일 발견 ----
     def discover(self) -> list[str]:
+        files: list[str] = []
         root = Path(self.config.watch_dir)
-        if not root.exists():
-            return []
-        return [str(p) for p in root.rglob("*.jsonl")]
+        if root.exists():
+            files.extend(str(p) for p in root.rglob("*.jsonl"))
+        # 컨테이너 transcript 루트도 감시(설정 시).
+        if self.config.container_root:
+            croot = Path(self.config.container_root)
+            if croot.exists():
+                files.extend(str(p) for p in croot.rglob("*.jsonl"))
+        return files
 
     def _project_folder(self, file_path: str) -> str:
         # ~/.claude/projects/<folder>/<session>.jsonl -> <folder>
         return Path(file_path).parent.name
+
+    def _container_id_for(self, file_path: str) -> str | None:
+        """파일이 container_root 아래면 첫 경로 세그먼트를 container_id로 반환."""
+        if not self.config.container_root:
+            return None
+        try:
+            rel = Path(file_path).resolve().relative_to(Path(self.config.container_root).resolve())
+        except (ValueError, OSError):
+            return None
+        return rel.parts[0] if rel.parts else None
 
     def _ensure_tailer(self, file_path: str, first_run: bool) -> Tailer:
         existing = self.tailers.get(file_path)
@@ -95,9 +111,10 @@ class Collector:
             return 0
 
         project = self._project_folder(file_path)
+        container_id = self._container_id_for(file_path)
         events: list[dict[str, Any]] = []
         for line in lines:
-            events.extend(self.parser.parse_line(line, project))
+            events.extend(self.parser.parse_line(line, project, container_id))
 
         # 적재(배치). 실패하면 오프셋 전진 안 함 -> 다음 폴링 재시도(멱등이라 안전).
         if events:

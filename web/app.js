@@ -18,6 +18,7 @@
     kind: document.getElementById("f-kind"),
     severity: document.getElementById("f-severity"),
     category: document.getElementById("f-category"),
+    container: document.getElementById("f-container"),
     text: document.getElementById("f-text"),
     errors: document.getElementById("f-errors"),
   };
@@ -217,13 +218,15 @@
       : sev === "warning"
       ? `<span class="sev-badge warning" title="warning">● warning</span>` : "";
     const catChip = cat ? `<span class="cat-chip">${esc(cat)}</span>` : "";
+    const ctrBadge = ev.container_id
+      ? `<span class="container-badge" title="container: ${esc(ev.container_id)}">🐳 ${esc(ev.container_id)}</span>` : "";
     const sidechain = ev.is_sidechain ? `<span class="sidechain">↳ sub</span>` : "";
     const sess = ev.session_id ? esc(ev.session_id).slice(0, 8) : "";
 
     el.innerHTML =
       `<div class="event__head">
          <span class="event__kind kind--${ev.kind}">${esc(ev.kind)}</span>
-         ${toolBadge}${sevBadge}${catChip}
+         ${toolBadge}${sevBadge}${catChip}${ctrBadge}
          <span class="event__meta">${esc(ev.machine_id || "")} · ${sess}</span>
          ${sidechain}
          <span class="event__time">${fmtTime(ev)}</span>
@@ -286,26 +289,36 @@
     return seg.length > 20 ? seg.slice(0, 20) + "…" : seg;
   }
   async function loadFilterOptions() {
-    // 세션: DB 전체(sessions 뷰)에서 최신순
+    // 세션/머신/컨테이너: DB 전체(sessions 뷰)에서 최신순
     const { data: sess } = await client.from("sessions").select("*").order("last_received", { ascending: false });
     if (sess) {
       const cur = F.session.value;
       while (F.session.options.length > 1) F.session.remove(1);
-      const machineSet = new Set();
+      const machineSet = new Set(), containerSet = new Set();
       for (const s of sess) {
         knownSessions.add(s.session_id);
         if (s.machine_id) machineSet.add(s.machine_id);
+        if (s.container_id) containerSet.add(s.container_id);
         const o = document.createElement("option");
         o.value = s.session_id;
         const proj = s.project ? " · " + shortProject(s.project) : "";
-        o.textContent = `${String(s.session_id).slice(0, 8)} · ${s.event_count}건${proj}`;
+        const ctr = s.container_id ? " · 🐳" + s.container_id : "";
+        o.textContent = `${String(s.session_id).slice(0, 8)} · ${s.event_count}건${proj}${ctr}`;
         F.session.appendChild(o);
       }
       if ([...F.session.options].some((o) => o.value === cur)) F.session.value = cur;
-      // 머신: machines 테이블 + 세션의 machine_id 합집합
-      const { data: mac } = await client.from("machines").select("machine_id");
-      if (mac) for (const m of mac) if (m.machine_id) machineSet.add(m.machine_id);
+      // 머신: 등록된 devices + 세션의 machine_id 합집합
+      for (const d of deviceMap.values()) if (d.machine_id) machineSet.add(d.machine_id);
       syncSelect(F.machine, machineSet);
+      // 컨테이너: "전체" + "호스트(native)만"(__none__) + 각 container_id
+      if (F.container && containerSet.size) {
+        const cur2 = F.container.value;
+        F.container.length = 0;
+        F.container.appendChild(new Option("전체", ""));
+        F.container.appendChild(new Option("🖥 호스트만", "__none__"));
+        for (const c of Array.from(containerSet).sort()) F.container.appendChild(new Option("🐳 " + c, c));
+        if ([...F.container.options].some((o) => o.value === cur2)) F.container.value = cur2;
+      }
     }
   }
   function syncSelect(sel, values, sliceLabel) {
@@ -362,6 +375,10 @@
     if (F.session.value) q = q.eq("session_id", F.session.value);
     if (F.kind.value) q = q.eq("kind", F.kind.value);
     if (F.errors.checked) q = q.eq("is_error", true);
+    if (F.container && F.container.value) {
+      if (F.container.value === "__none__") q = q.is("container_id", null);   // 호스트 native만
+      else q = q.eq("container_id", F.container.value);
+    }
     return q;
   }
   function baseQuery() {
@@ -455,9 +472,9 @@
     clearTimeout(textDebounce);
     textDebounce = setTimeout(() => render(false), 150);
   });
-  // 머신/세션/종류/실패 = 서버측 필터 → DB에서 다시 조회(로드 안 된 세션도 가져옴).
-  [F.machine, F.session, F.kind, F.errors].forEach((el) =>
-    el.addEventListener("change", loadHistory));
+  // 머신/세션/종류/컨테이너/실패 = 서버측 필터 → DB에서 다시 조회(로드 안 된 세션도 가져옴).
+  [F.machine, F.session, F.kind, F.container, F.errors].forEach((el) =>
+    el && el.addEventListener("change", loadHistory));
   // 심각도/카테고리 = 클라이언트 분류 → 로드된 것에서 즉시 필터.
   [F.severity, F.category].forEach((el) =>
     el.addEventListener("change", () => render(false)));

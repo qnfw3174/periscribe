@@ -4,6 +4,9 @@
   "watch_dir": "",
   "_watch_dir_help": "비우면 ~/.claude/projects (Windows: %USERPROFILE%\\.claude\\projects) 자동 사용.",
 
+  "container_root": "",
+  "_container_root_help": "devcontainer transcript 바인드마운트 루트(예: %USERPROFILE%\\periscribe-agents). 하위 첫 폴더명이 container_id. 비우면 컨테이너 기능 off.",
+
   "machine_id": "",
   "_machine_id_help": "비우면 hostname 사용. 멀티 PC면 PC마다 다르게 지정.",
 

@@ -55,5 +55,11 @@ Claude Code가 자동으로 남기는 transcript(JSONL)를 **읽기 전용**으�
 - 머신 추가: 웹 **⚙ 머신 관리**에서 토큰 발급 → 그 PC에서 설치 명령 실행
 - 각 PC: 단일 `periscribe.exe`(빌드는 `packaging/`) 또는 소스 실행(`python -m periscribe`)
 
+## 컨테이너(샌드박스) 연동
+에이전트를 Docker devcontainer로 격리해도 그 활동이 Periscribe에 🐳 태그로 보이게 하는
+경량 통합. 마운트 규약 + `container_id` 태깅으로, 호스트 Collector가 컨테이너 transcript도
+수집한다. 설계 배경은 [agent-container-isolation.md](./agent-container-isolation.md),
+사용법은 [docs/CONTAINERS.md](./docs/CONTAINERS.md), 템플릿은 [`.devcontainer/`](./.devcontainer).
+
 ## 라이선스
 MIT

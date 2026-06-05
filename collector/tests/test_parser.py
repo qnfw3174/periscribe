@@ -128,6 +128,21 @@ def test_thinking_ignored_by_default():
     assert evs == []
 
 
+def test_container_id_stamped():
+    p = mk()
+    evs = p.parse_line(line({
+        "type": "user", "uuid": "u9", "sessionId": "s1", "timestamp": "t",
+        "message": {"content": "hi"},
+    }), project_folder="proj", container_id="demo-ctr")
+    assert evs[0]["container_id"] == "demo-ctr"
+    # 미지정이면 None(native 세션)
+    evs2 = p.parse_line(line({
+        "type": "user", "uuid": "u10", "sessionId": "s1", "timestamp": "t",
+        "message": {"content": "hi"},
+    }))
+    assert evs2[0]["container_id"] is None
+
+
 def test_redaction():
     p = Parser(machine_id="pc", redact=True)
     evs = p.parse_line(line({

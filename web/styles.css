@@ -191,6 +191,10 @@ pre.code.bash { color: var(--bash); }
   font-size: 10.5px; color: var(--muted); background: var(--panel-2);
   border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; text-transform: uppercase;
 }
+.container-badge {
+  font-size: 10.5px; color: var(--accent); background: #14233a;
+  border: 1px solid #274568; border-radius: 10px; padding: 1px 7px; font-weight: 600;
+}
 /* 크리티컬 = 굵은 좌측 빨강 보더 + 살짝 밝은 배경(실패 결과의 본문-빨강과 구분) */
 .event.is-critical { border-left-color: var(--error) !important; border-left-width: 5px; background: #1d1517; }
 

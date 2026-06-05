@@ -22,7 +22,7 @@ def make_file(p: Path, n_lines: int) -> str:
     return str(p)
 
 
-def make_collector(tmp_path: Path, backfill: int = 0, checkpoint_data=None) -> Collector:
+def make_collector(tmp_path: Path, backfill: int = 0, checkpoint_data=None, container_root: str = "") -> Collector:
     cp = tmp_path / "cp.json"
     if checkpoint_data is not None:
         cp.write_text(json.dumps(checkpoint_data), encoding="utf-8")
@@ -30,7 +30,24 @@ def make_collector(tmp_path: Path, backfill: int = 0, checkpoint_data=None) -> C
     cfg.watch_dir = str(tmp_path)
     cfg.checkpoint_path = str(cp)
     cfg.backfill = backfill
+    cfg.container_root = container_root
     return Collector(cfg, DummySink())
+
+
+def test_container_id_from_path(tmp_path):
+    croot = tmp_path / "agents"
+    f = croot / "ctr-A" / "projfolder" / "sess.jsonl"
+    f.parent.mkdir(parents=True)
+    f.write_bytes(b'{"i":0}\n')
+    c = make_collector(tmp_path, container_root=str(croot))
+    assert c._container_id_for(str(f)) == "ctr-A"
+    # container_root 밖(native) → None
+    native = tmp_path / "a.jsonl"; native.write_bytes(b"x")
+    assert c._container_id_for(str(native)) is None
+    # discover가 두 루트 모두 포함
+    make_file(tmp_path / "n.jsonl", 1)
+    found = c.discover()
+    assert str(f) in found
 
 
 def test_fresh_start_skips_history_at_eof(tmp_path):

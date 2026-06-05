@@ -90,16 +90,18 @@ class Parser:
         self.redact = redact
         self.schema_version = schema_version
 
-    def parse_line(self, line: str, project_folder: Optional[str] = None) -> list[dict[str, Any]]:
+    def parse_line(self, line: str, project_folder: Optional[str] = None,
+                   container_id: Optional[str] = None) -> list[dict[str, Any]]:
         """한 줄 -> 이벤트 리스트. 절대 예외를 던지지 않는다."""
         try:
-            return self._parse_line(line, project_folder)
+            return self._parse_line(line, project_folder, container_id)
         except Exception:
             # 모르는 형태/버그에도 수집 루프가 죽지 않도록 전부 흡수
             return []
 
     # ---- 내부 ----
-    def _parse_line(self, line: str, project_folder: Optional[str]) -> list[dict[str, Any]]:
+    def _parse_line(self, line: str, project_folder: Optional[str],
+                    container_id: Optional[str] = None) -> list[dict[str, Any]]:
         line = line.strip()
         if not line:
             return []
@@ -114,7 +116,7 @@ class Parser:
         msg = obj.get("message")
         msg = msg if isinstance(msg, dict) else {}
 
-        base = self._base_fields(obj, project_folder)
+        base = self._base_fields(obj, project_folder, container_id)
         raw = obj if self.store_raw else None
 
         if typ == "assistant":
@@ -126,11 +128,13 @@ class Parser:
         # 모르는 type -> skip
         return []
 
-    def _base_fields(self, obj: dict[str, Any], project_folder: Optional[str]) -> dict[str, Any]:
+    def _base_fields(self, obj: dict[str, Any], project_folder: Optional[str],
+                     container_id: Optional[str] = None) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
             "source": self.source,
             "machine_id": self.machine_id,
+            "container_id": container_id,   # 컨테이너 세션이면 id, 호스트 native면 None
             "session_id": obj.get("sessionId"),
             "agent_id": obj.get("agentId"),
             "is_sidechain": bool(obj.get("isSidechain", False)),

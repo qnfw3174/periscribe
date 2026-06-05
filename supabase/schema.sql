@@ -25,6 +25,7 @@ create table if not exists public.events (
   is_error        boolean,
   project         text,
   cwd             text,
+  container_id    text,                                    -- 컨테이너(샌드박스) 세션 태깅. native는 null
   payload         jsonb not null default '{}'::jsonb,
   raw             jsonb
 );
@@ -94,7 +95,8 @@ select
   count(*)::int as event_count,
   min(ts) as first_ts,
   max(ts) as last_ts,
-  max(received_at) as last_received
+  max(received_at) as last_received,
+  (array_agg(container_id order by received_at desc))[1] as container_id
 from public.events
 group by session_id;
 
