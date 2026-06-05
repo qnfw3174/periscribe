@@ -35,7 +35,26 @@
   </div>
 
   <!-- 머신 헬스(하트비트) 바 -->
-  <div id="health-bar" class="health-bar needs-auth"></div>
+  <div id="health-bar" class="health-bar needs-auth">
+    <span id="health-chips"></span>
+    <button id="manage-devices" class="btn ghost btn-sm">⚙ 머신 관리</button>
+  </div>
+
+  <!-- 머신 관리 모달 -->
+  <div id="devices-modal" class="modal" style="display:none">
+    <div class="modal-card">
+      <div class="modal-head">
+        <span>머신 관리</span>
+        <button id="devices-close" class="btn ghost btn-sm">닫기</button>
+      </div>
+      <form id="add-device-form" class="add-device">
+        <input id="device-name" type="text" placeholder="머신 이름 (예: 사무실-PC)" />
+        <button class="btn" type="submit">+ 토큰 발급</button>
+      </form>
+      <div id="token-result" class="token-result" style="display:none"></div>
+      <div id="devices-list" class="devices-list"></div>
+    </div>
+  </div>
 
   <section class="filters needs-auth">
     <label>머신

@@ -95,6 +95,41 @@ body.authed #login-gate { display: none; }
 .machine-chip .mseen { color: var(--muted); }
 .health-empty { color: var(--muted); font-size: 12px; }
 
+/* ---- 머신 관리 모달 ---- */
+.modal {
+  position: fixed; inset: 0; z-index: 200; display: flex;
+  align-items: flex-start; justify-content: center; background: rgba(0,0,0,.55); padding: 60px 16px;
+}
+.modal-card {
+  width: 560px; max-width: 100%; max-height: 80vh; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px;
+}
+.modal-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; margin-bottom: 12px; }
+.add-device { display: flex; gap: 8px; margin-bottom: 10px; }
+.add-device input {
+  flex: 1; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; font-size: 13px;
+}
+.token-result {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;
+}
+.token-warn { color: var(--bash); font-size: 12px; margin-bottom: 8px; }
+.token-label { color: var(--muted); font-size: 11px; margin: 8px 0 3px; text-transform: uppercase; }
+.token-box {
+  margin: 0; padding: 8px 10px; background: #0b0d11; border: 1px solid var(--border); border-radius: 6px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; color: var(--ok);
+}
+.devices-list { display: flex; flex-direction: column; gap: 6px; }
+.device-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+}
+.device-row .dev-main { flex: 1; font-size: 13px; }
+.device-row .dev-meta { color: var(--muted); font-size: 11px; margin-left: 6px; }
+.dev-online { color: var(--ok); font-size: 12px; }
+.dev-stale { color: var(--muted); font-size: 12px; }
+.dev-revoked { color: var(--error); font-size: 12px; }
+
 .loadmore-bar { text-align: center; padding: 10px 16px 0; }
 .btn.ghost {
   background: transparent; color: var(--accent); border: 1px solid var(--border);

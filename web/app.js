@@ -464,10 +464,12 @@
   document.getElementById("reload").addEventListener("click", loadHistory);
   if (loadMoreBtn) loadMoreBtn.addEventListener("click", loadMore);
 
-  // ---------- 머신 헬스(하트비트) ----------
-  const healthBar = document.getElementById("health-bar");
-  const machineMap = new Map();
-  const HEALTH_ONLINE_MS = 75000; // last_seen이 이 이내면 온라인(heartbeat 30s 기준 여유)
+  // ---------- 머신(디바이스) 헬스 + 관리 ----------
+  const healthChips = document.getElementById("health-chips");
+  const deviceMap = new Map();              // device.id -> device row
+  let currentUserId = null;                 // 토큰 발급 시 owner_id
+  const HEALTH_ONLINE_MS = 75000;           // last_seen이 이 이내면 온라인(heartbeat 30s 여유)
+  const ingestUrl = (cfg.SUPABASE_URL || "").replace(/\/$/, "") + "/functions/v1/ingest";
 
   function relTime(iso) {
     const ms = Date.parse(iso);
@@ -478,33 +480,108 @@
     if (s < 3600) return `${Math.floor(s / 60)}분 전`;
     return `${Math.floor(s / 3600)}시간 전`;
   }
+  function isOnline(d) {
+    const age = Date.now() - Date.parse(d.last_seen || 0);
+    return age >= 0 && age < HEALTH_ONLINE_MS;
+  }
+  function deviceLabel(d) { return d.name || d.machine_id || (d.id || "").slice(0, 8); }
+
   function renderHealth() {
-    if (!healthBar) return;
-    const list = Array.from(machineMap.values()).sort((a, b) => (a.machine_id < b.machine_id ? -1 : 1));
+    if (!healthChips) return;
+    const list = Array.from(deviceMap.values()).filter((d) => !d.revoked)
+      .sort((a, b) => (deviceLabel(a) < deviceLabel(b) ? -1 : 1));
     if (list.length === 0) {
-      healthBar.innerHTML = '<span class="health-empty">연결된 Collector 없음</span>';
+      healthChips.innerHTML = '<span class="health-empty">등록된 머신 없음 — ⚙ 머신 관리에서 추가</span>';
       return;
     }
-    healthBar.innerHTML = list.map((m) => {
-      const ageMs = Date.now() - Date.parse(m.last_seen || 0);
-      const online = ageMs >= 0 && ageMs < HEALTH_ONLINE_MS;
-      return `<span class="machine-chip ${online ? "online" : "stale"}" title="${esc(m.platform || "")} · v${esc(m.collector_version || "?")}">` +
-        `<span class="mdot"></span><span class="mname">${esc(m.machine_id)}</span>` +
-        `<span class="mseen">${online ? "온라인" : relTime(m.last_seen)}</span></span>`;
+    healthChips.innerHTML = list.map((d) => {
+      const on = isOnline(d);
+      return `<span class="machine-chip ${on ? "online" : "stale"}" title="${esc(d.platform || "")} · v${esc(d.collector_version || "?")}">` +
+        `<span class="mdot"></span><span class="mname">${esc(deviceLabel(d))}</span>` +
+        `<span class="mseen">${on ? "온라인" : (d.last_seen ? relTime(d.last_seen) : "대기")}</span></span>`;
     }).join("");
   }
-  async function loadMachines() {
-    const { data, error } = await client.from("machines").select("*");
-    if (!error) { for (const m of data || []) machineMap.set(m.machine_id, m); renderHealth(); }
+  async function loadDevices() {
+    const { data, error } = await client.from("devices").select("*");
+    if (!error) {
+      deviceMap.clear();
+      for (const d of data || []) deviceMap.set(d.id, d);
+      renderHealth(); renderDeviceList();
+    }
   }
-  function subscribeMachines() {
-    client.channel("periscribe-machines")
-      .on("postgres_changes", { event: "*", schema: "public", table: "machines" }, (p) => {
-        const m = p.new;
-        if (m && m.machine_id) { machineMap.set(m.machine_id, m); renderHealth(); }
+  function subscribeDevices() {
+    client.channel("periscribe-devices")
+      .on("postgres_changes", { event: "*", schema: "public", table: "devices" }, (p) => {
+        if (p.new && p.new.id) deviceMap.set(p.new.id, p.new);
+        else if (p.old && p.old.id) deviceMap.delete(p.old.id);
+        renderHealth(); renderDeviceList();
       }).subscribe();
   }
-  setInterval(renderHealth, 5000); // 상대시간/온라인 상태 주기 갱신
+  setInterval(renderHealth, 5000);          // 상대시간/온라인 상태 주기 갱신
+
+  // ---- 디바이스 관리(토큰 발급/revoke) ----
+  function genToken() {
+    const a = new Uint8Array(24); crypto.getRandomValues(a);
+    return "pscb_" + Array.from(a).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  async function sha256hex(s) {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+    return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  function renderDeviceList() {
+    const el = document.getElementById("devices-list");
+    if (!el) return;
+    const list = Array.from(deviceMap.values()).sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+    if (list.length === 0) { el.innerHTML = '<div class="health-empty">아직 등록된 머신이 없습니다.</div>'; return; }
+    el.innerHTML = list.map((d) => {
+      const status = d.revoked ? '<span class="dev-revoked">revoked</span>'
+        : isOnline(d) ? '<span class="dev-online">● 온라인</span>'
+        : `<span class="dev-stale">● ${d.last_seen ? relTime(d.last_seen) : "대기"}</span>`;
+      const rev = d.revoked ? "" : `<button class="btn ghost btn-sm" data-revoke="${d.id}">revoke</button>`;
+      return `<div class="device-row">
+        <div class="dev-main"><b>${esc(deviceLabel(d))}</b>
+          <span class="dev-meta">${esc(d.machine_id || "미연결")} · ${esc(d.platform || "")}</span></div>
+        <div class="dev-status">${status}</div>${rev}</div>`;
+    }).join("");
+  }
+  async function addDevice(name) {
+    const resultEl = document.getElementById("token-result");
+    const token = genToken();
+    const token_hash = await sha256hex(token);
+    const { error } = await client.from("devices").insert({ owner_id: currentUserId, token_hash, name: name || null });
+    if (error) {
+      resultEl.style.display = "block";
+      resultEl.innerHTML = '<span class="login-error">발급 실패: ' + esc(error.message) + "</span>";
+      return;
+    }
+    const installCmd = `periscribe.exe install --token ${token} --url ${ingestUrl}`;
+    resultEl.style.display = "block";
+    resultEl.innerHTML =
+      '<div class="token-warn">⚠ 이 토큰은 지금 한 번만 표시됩니다. 안전하게 보관하세요.</div>' +
+      '<div class="token-label">디바이스 토큰</div><pre class="token-box">' + esc(token) + "</pre>" +
+      '<div class="token-label">설치 명령 (해당 PC에서 실행)</div><pre class="token-box">' + esc(installCmd) + "</pre>";
+    loadDevices();
+  }
+
+  const devModal = document.getElementById("devices-modal");
+  const manageBtn = document.getElementById("manage-devices");
+  if (manageBtn) manageBtn.addEventListener("click", () => { renderDeviceList(); if (devModal) devModal.style.display = "flex"; });
+  const devClose = document.getElementById("devices-close");
+  if (devClose) devClose.addEventListener("click", () => {
+    if (devModal) devModal.style.display = "none";
+    const tr = document.getElementById("token-result"); if (tr) tr.style.display = "none";
+  });
+  const addForm = document.getElementById("add-device-form");
+  if (addForm) addForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const inp = document.getElementById("device-name");
+    await addDevice(inp.value.trim()); inp.value = "";
+  });
+  const devListEl = document.getElementById("devices-list");
+  if (devListEl) devListEl.addEventListener("click", async (e) => {
+    const id = e.target && e.target.getAttribute && e.target.getAttribute("data-revoke");
+    if (id) { await client.from("devices").update({ revoked: true }).eq("id", id); loadDevices(); }
+  });
 
   // ---------- 인증 게이트 ----------
   let appStarted = false;
@@ -513,10 +590,11 @@
     appStarted = true;
     loadFilterOptions();                 // DB 전체 세션/머신으로 드롭다운 채움
     loadHistory().then(subscribe);
-    loadMachines().then(subscribeMachines);
+    loadDevices().then(subscribeDevices);
   }
   function showAuthed(session) {
     document.body.classList.add("authed");
+    currentUserId = session && session.user ? session.user.id : null;
     const ub = document.getElementById("user-box");
     if (ub) ub.style.display = "";
     const ue = document.getElementById("user-email");
