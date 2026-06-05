@@ -9,10 +9,9 @@
 
   "poll_interval": 0.4,
 
-  "supabase_url": "https://YOUR-PROJECT.supabase.co",
-  "supabase_key": "YOUR-SERVICE-ROLE-OR-INSERT-KEY",
-  "_supabase_key_help": "service_role 또는 insert 전용 키. 절대 웹 페이지에 넣지 말 것. 로컬에만 보관.",
-  "table": "events",
+  "ingest_url": "https://YOUR-PROJECT.supabase.co/functions/v1/ingest",
+  "device_token": "PASTE-DEVICE-TOKEN-FROM-WEB",
+  "_device_token_help": "웹 UI '머신 추가'에서 발급받은 토큰. 로컬에만 보관. service_role 아님(이 머신 insert만 가능).",
   "batch_size": 500,
 
   "checkpoint_path": "checkpoints/offsets.json",

@@ -29,11 +29,11 @@ class Config:
     machine_id: str = field(default_factory=socket.gethostname)
     source: str = "claude-code"
 
-    # Supabase
-    supabase_url: str = ""           # 예: https://xxxx.supabase.co
-    supabase_key: str = ""           # service_role 또는 insert 전용 키. 로컬에만!
-    table: str = "events"
-    batch_size: int = 500            # 한 번에 insert 할 최대 이벤트 수
+    # 적재 대상 — Edge Function(ingest) 엔드포인트 + 디바이스 토큰.
+    # service_role/anon 키는 더 이상 보유하지 않는다(토큰 유출돼도 이 머신 insert만 가능).
+    ingest_url: str = ""             # 예: https://xxxx.supabase.co/functions/v1/ingest
+    device_token: str = ""           # 웹에서 발급받은 머신 등록 토큰. 로컬에만!
+    batch_size: int = 500            # 한 번에 보낼 최대 이벤트 수
 
     # 오프셋 영속
     checkpoint_path: str = "checkpoints/offsets.json"
@@ -46,7 +46,7 @@ class Config:
     store_thinking: bool = False     # thinking 블록 저장 여부(기본 무시)
     redact: bool = False             # 수집 단계 민감정보 마스킹(토큰/키/비번 패턴)
 
-    # 헬스(하트비트) — machines 테이블에 주기적 upsert. 0이면 비활성.
+    # 헬스(하트비트) — 유휴 시 빈 ingest 호출로 last_seen 유지. 0이면 비활성.
     heartbeat_interval: float = 30.0
     # 파일 로그(서비스/무콘솔 모드 진단용). 비우면 stderr만. 크기 기반 로테이션.
     log_file: str = ""
@@ -86,10 +86,10 @@ class Config:
 
     def validate(self) -> None:
         missing = []
-        if not self.supabase_url:
-            missing.append("supabase_url")
-        if not self.supabase_key:
-            missing.append("supabase_key")
+        if not self.ingest_url:
+            missing.append("ingest_url")
+        if not self.device_token:
+            missing.append("device_token")
         if missing:
             raise ValueError(
                 "필수 설정 누락: " + ", ".join(missing)

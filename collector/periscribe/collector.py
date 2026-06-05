@@ -19,7 +19,6 @@ from typing import Any
 from . import __version__
 from .checkpoint import Checkpoint
 from .config import Config
-from .health import HealthReporter
 from .parser import Parser
 from .sink import Sink, SinkError
 from .tailer import Tailer, file_inode, initial_offset
@@ -43,14 +42,8 @@ class Collector:
         self.tailers: dict[str, Tailer] = {}
         self._running = False
 
-        # 헬스(하트비트): supabase 키가 있고 interval>0 일 때만 활성(dry-run 등에서는 비활성).
-        self.health: HealthReporter | None = None
-        if config.heartbeat_interval > 0 and config.supabase_url and config.supabase_key:
-            self.health = HealthReporter(
-                url=config.supabase_url, key=config.supabase_key,
-                machine_id=config.machine_id, source=config.source,
-                collector_version=__version__,
-            )
+        # 헬스(하트비트): sink가 beat()를 지원하고 interval>0 일 때만(dry-run 등에서는 비활성).
+        self._heartbeat_enabled = config.heartbeat_interval > 0 and hasattr(sink, "beat")
         self._last_beat = 0.0
 
         # 파일 로그(선택). 비우면 stderr만 사용.
@@ -150,13 +143,13 @@ class Collector:
 
     # ---- 하트비트 ----
     def _maybe_heartbeat(self) -> None:
-        if self.health is None:
+        if not self._heartbeat_enabled:
             return
         now = time.time()
         if now - self._last_beat < self.config.heartbeat_interval:
             return
         try:
-            self.health.beat()
+            self.sink.beat()  # 빈 ingest → 함수가 devices.last_seen 갱신
             self._last_beat = now
         except Exception as e:
             self._log(f"[periscribe] 하트비트 실패: {e}")

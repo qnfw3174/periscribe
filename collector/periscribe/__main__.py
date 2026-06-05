@@ -8,9 +8,10 @@ from __future__ import annotations
 import argparse
 import sys
 
+from . import __version__
 from .collector import Collector
 from .config import Config
-from .sink import StdoutSink, SupabaseSink
+from .sink import IngestSink, StdoutSink
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -22,7 +23,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--backfill", type=int, help="기존 파일 마지막 N줄 백필(기본 0=EOF부터)")
     p.add_argument("--store-raw", action="store_true", help="원본 라인을 events.raw에 저장")
     p.add_argument("--redact", action="store_true", help="수집 단계 민감정보 마스킹")
-    p.add_argument("--dry-run", action="store_true", help="Supabase 대신 stdout으로 이벤트 출력(테스트)")
+    p.add_argument("--dry-run", action="store_true", help="적재 대신 stdout으로 이벤트 출력(테스트)")
+    p.add_argument("--ingest-url", help="ingest 엔드포인트 override")
+    p.add_argument("--device-token", help="디바이스 토큰 override")
     args = p.parse_args(argv)
 
     cfg = Config.load(args.config)
@@ -39,6 +42,10 @@ def main(argv: list[str] | None = None) -> int:
         cfg.store_raw = True
     if args.redact:
         cfg.redact = True
+    if args.ingest_url:
+        cfg.ingest_url = args.ingest_url
+    if args.device_token:
+        cfg.device_token = args.device_token
 
     if args.dry_run:
         sink = StdoutSink()
@@ -48,7 +55,8 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as e:
             print(f"[periscribe] 설정 오류: {e}", file=sys.stderr)
             return 2
-        sink = SupabaseSink(cfg.supabase_url, cfg.supabase_key, cfg.table)
+        sink = IngestSink(cfg.ingest_url, cfg.device_token,
+                          machine_id=cfg.machine_id, collector_version=__version__)
 
     Collector(cfg, sink).run()
     return 0
