@@ -19,6 +19,11 @@ _*.py
 _commitmsg.txt
 *.tmp.png
 
+# PyInstaller build artifacts
+packaging/dist/
+packaging/build/
+packaging/*.spec
+
 # --- Python ---
 __pycache__/
 *.py[cod]
