@@ -21,6 +21,17 @@ class Sink(Protocol):
 
 
 class SinkError(Exception):
+    """네트워크/일시 오류 — 재시도 대상(오프셋 전진 금지)."""
+    pass
+
+
+class SinkAuthError(SinkError):
+    """401(revoked/invalid token) — 재시도 무의미. 호출자가 백오프/종료."""
+    pass
+
+
+class SinkDataError(SinkError):
+    """서버가 payload(특정 행)를 거부(4xx) — poison 가능. emit이 이분탐색으로 격리."""
     pass
 
 
@@ -32,20 +43,40 @@ class IngestSink:
         self.url = ingest_url
         self.token = device_token
         self.timeout = timeout
+        self.last_drop = ""   # 최근 poison(불량 행) 스킵 메시지(관측용)
         self.machine = {
             # devices.machine_id 가 events.machine_id(설정값)와 일치하도록 동일 값 사용.
             "hostname": machine_id or platform.node(),
             "platform": f"{platform.system()} {platform.release()}",
             "version": collector_version,
             "machine_id": machine_id,
+            "last_error": None,
         }
+
+    def set_last_error(self, msg: str) -> None:
+        """하트비트에 실어 보낼 최근 오류(없으면 None)."""
+        self.machine["last_error"] = msg or None
 
     def emit(self, events: list[dict[str, Any]]) -> dict[str, Any]:
         if not events:
             return {}
         # 키 정규화(PGRST102 방지) + NUL 제거(22P05 방지)는 함수가 아니라 여기서.
         rows = _strip_nul(_normalize_rows(events))
-        return self._post(rows)
+        return self._emit_rows(rows)
+
+    def _emit_rows(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
+        """적재. 서버가 4xx로 거부(SinkDataError)하면 이분탐색으로 불량 행만 스킵."""
+        try:
+            return self._post(rows)
+        except SinkDataError as e:
+            if len(rows) <= 1:
+                eid = rows[0].get("event_id") if rows else "?"
+                self.last_drop = f"불량 이벤트 스킵(event_id={eid}): {e}"
+                return {}  # poison 단건 → 버리고 진행(오프셋 전진 → 파일 정체 해소)
+            mid = len(rows) // 2
+            r1 = self._emit_rows(rows[:mid])
+            r2 = self._emit_rows(rows[mid:])
+            return r2 or r1
 
     def beat(self) -> dict[str, Any]:
         """유휴 하트비트: 빈 events로 호출 → 함수가 devices.last_seen 갱신 + 백필 요청 반환."""
@@ -74,6 +105,13 @@ class IngestSink:
                 detail = e.read().decode("utf-8", "replace")
             except Exception:
                 pass
+            if e.code == 401:
+                # revoked/invalid token — 재시도 무의미.
+                raise SinkAuthError(f"ingest 401(revoked/invalid): {detail}") from e
+            if 400 <= e.code < 500:
+                # 서버가 payload(특정 행)를 거부 — poison 가능. emit이 이분탐색으로 격리.
+                raise SinkDataError(f"ingest HTTP {e.code}: {detail}") from e
+            # 5xx(일시적 서버/DB) — 재시도 대상.
             raise SinkError(f"ingest HTTP {e.code}: {detail}") from e
         except urllib.error.URLError as e:
             # 네트워크 실패 -> 재시도 대상(오프셋 전진 금지)

@@ -20,7 +20,7 @@ from . import __version__
 from .checkpoint import Checkpoint
 from .config import Config
 from .parser import Parser
-from .sink import Sink, SinkError
+from .sink import Sink, SinkAuthError, SinkError
 from .tailer import Tailer, file_inode, initial_offset
 
 
@@ -45,6 +45,14 @@ class Collector:
         # 헬스(하트비트): sink가 beat()를 지원하고 interval>0 일 때만(dry-run 등에서는 비활성).
         self._heartbeat_enabled = config.heartbeat_interval > 0 and hasattr(sink, "beat")
         self._last_beat = 0.0
+
+        # 관측: 최근 오류를 하트비트에 실어 보낸다(웹에서 머신별 표시).
+        self._last_error = ""
+        self._last_drop_seen = ""        # poison 스킵 메시지 변화 감지용
+        # 401(revoked/삭제) 백오프·자가종료.
+        self._auth_fail = 0
+        self._auth_fail_max = 10         # 이만큼 연속 401이면 죽은 토큰으로 보고 종료
+        self._auth_backoff_cap = 300.0   # 지수 백오프 상한(초)
 
         # 파일 로그(선택). 비우면 stderr만 사용.
         self._log_path = config.log_file or None
@@ -189,9 +197,21 @@ class Collector:
             resp = self.sink.beat()  # 빈 ingest → 함수가 last_seen 갱신 + 백필 요청 반환
             self._last_beat = now
             return resp
+        except SinkAuthError:
+            raise  # 상위 루프에서 백오프/종료 처리
         except Exception as e:
+            self._set_error(f"하트비트 실패: {e}")
             self._log(f"[periscribe] 하트비트 실패: {e}")
             return None
+
+    def _set_error(self, msg: str) -> None:
+        self._last_error = msg
+
+    def _interruptible_sleep(self, secs: float) -> None:
+        """길어도 종료(_running=False)에 빨리 반응하도록 잘게 나눠 잔다."""
+        end = time.time() + max(0.0, secs)
+        while self._running and time.time() < end:
+            time.sleep(min(0.4, end - time.time()))
 
     # ---- 메인 루프 ----
     def run(self) -> None:
@@ -203,8 +223,12 @@ class Collector:
                   f"redact={self.config.redact} heartbeat={self.config.heartbeat_interval}s")
 
         while self._running:
+            # 직전 오류를 하트비트에 실어 보낸다(웹에서 머신별 표시).
+            if hasattr(self.sink, "set_last_error"):
+                self.sink.set_last_error(self._last_error)
             try:
                 backfill_ids: set[str] = set()
+                iter_error = None
                 resp = self._maybe_heartbeat()
                 if resp:
                     backfill_ids.update(resp.get("backfill") or [])
@@ -216,20 +240,42 @@ class Collector:
                         total += cnt
                         if fresp:
                             backfill_ids.update(fresp.get("backfill") or [])
+                    except SinkAuthError:
+                        raise  # 아래 핸들러로 → 백오프/종료
                     except SinkError as e:
-                        # 네트워크/적재 실패: 이 파일 오프셋은 전진 안 됨. 다음 폴링 재시도.
+                        # 네트워크/일시 실패: 이 파일 오프셋은 전진 안 됨. 다음 폴링 재시도.
+                        iter_error = f"적재 실패(재시도): {e}"
                         self._log(f"[periscribe] sink 실패(재시도 예정): {e}")
                     except Exception as e:
-                        # 파일 단위 예외가 전체 루프를 죽이지 않게
+                        iter_error = f"파일 처리 오류: {e}"
                         self._log(f"[periscribe] 파일 처리 오류 {fp}: {e}")
                 if total:
                     self._log(f"[periscribe] +{total} events")
                 if backfill_ids:
                     self._apply_backfill(backfill_ids)
                 first_run = False
+                self._auth_fail = 0  # 정상 한 바퀴 → 401 카운터 리셋
+
+                # 이번 바퀴 오류 상태 갱신: poison 스킵 변화도 반영, 깨끗하면 클리어.
+                drop = getattr(self.sink, "last_drop", "")
+                if drop and drop != self._last_drop_seen:
+                    self._last_drop_seen = drop
+                    iter_error = iter_error or drop
+                self._last_error = iter_error or ""
+            except SinkAuthError as e:
+                self._auth_fail += 1
+                self._set_error(f"인증 거부(revoked/삭제?): {e}")
+                self._log(f"[periscribe] 401 인증 거부 #{self._auth_fail}/{self._auth_fail_max}: {e}")
+                if self._auth_fail >= self._auth_fail_max:
+                    self._log("[periscribe] 토큰이 무효(revoked/삭제)로 판단 → 수집기 종료.")
+                    self._running = False
+                    break
+                backoff = min(self._auth_backoff_cap, 5.0 * (2 ** (self._auth_fail - 1)))
+                self._interruptible_sleep(backoff)
+                continue
             except Exception as e:
                 self._log(f"[periscribe] 루프 오류: {e}")
-            time.sleep(self.config.poll_interval)
+            self._interruptible_sleep(self.config.poll_interval)
 
         self._log("[periscribe] 종료")
 

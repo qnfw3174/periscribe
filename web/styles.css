@@ -155,6 +155,7 @@ body.authed #login-gate { display: none; }
 .dev-online { color: var(--ok); font-size: 12px; }
 .dev-stale { color: var(--muted); font-size: 12px; }
 .dev-revoked { color: var(--error); font-size: 12px; }
+.dev-warn { color: var(--bash); cursor: help; }
 
 .loadmore-bar { text-align: center; padding: 10px 16px 0; }
 .btn.ghost {

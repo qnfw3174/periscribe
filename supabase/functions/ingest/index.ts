@@ -63,7 +63,9 @@ Deno.serve(async (req: Request) => {
     });
     if (!iResp.ok) {
       const detail = await iResp.text();
-      return json({ error: "insert failed", detail }, 502);
+      // PostgREST 상태코드를 그대로 전달: 4xx(데이터/제약=poison) vs 5xx(일시적). 컬렉터가 구분 처리.
+      const code = iResp.status >= 400 && iResp.status < 600 ? iResp.status : 502;
+      return json({ error: "insert failed", detail }, code);
     }
   }
 
@@ -77,6 +79,8 @@ Deno.serve(async (req: Request) => {
       machine_id: m.hostname ?? null,
       platform: m.platform ?? null,
       collector_version: m.version ?? null,
+      last_error: m.last_error ?? null,
+      last_error_at: m.last_error ? new Date().toISOString() : null,
     }),
   });
 

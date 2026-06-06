@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 _REDACT_PATTERNS = [
@@ -24,10 +23,6 @@ _REDACT_PATTERNS = [
     re.compile(r"ghp_[A-Za-z0-9]{20,}"),
     re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),  # JWT
 ]
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _redact(text: Any) -> Any:
@@ -140,7 +135,8 @@ class Parser:
             "is_sidechain": bool(obj.get("isSidechain", False)),
             "parent_uuid": obj.get("parentUuid"),
             "ts": obj.get("timestamp"),
-            "received_at": _now_iso(),
+            # received_at 은 보내지 않는다 → DB default now()(서버 시계)가 스탬프.
+            # 머신별 시계오차로 인한 키셋 페이지네이션 순서 흔들림 방지.
             "project": _decode_project(project_folder),
             "cwd": obj.get("cwd"),
             "_uuid": obj.get("uuid"),  # event_id 생성을 위해 임시 보관(_접두 = 출력 전 제거)

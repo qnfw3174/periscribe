@@ -62,7 +62,9 @@ create table if not exists public.devices (
   created_at        timestamptz not null default now(),
   last_seen         timestamptz,                           -- ingest 호출 때마다 함수가 갱신(하트비트)
   revoked           boolean not null default false,
-  uninstalled_at    timestamptz                            -- uninstaller가 신호 보내면 스탬프(+자동 revoke)
+  uninstalled_at    timestamptz,                           -- uninstaller가 신호 보내면 스탬프(+자동 revoke)
+  last_error        text,                                  -- 컬렉터가 하트비트로 보고하는 최근 오류(관측)
+  last_error_at     timestamptz
 );
 create index if not exists devices_owner_idx on public.devices(owner_id);
 
@@ -135,13 +137,25 @@ group by session_id;
 grant select on public.sessions to authenticated;
 
 -- =====================================================================
--- 4. (선택) 보존 정책 헬퍼 — 오래된 이벤트 정리.
+-- 4. 보존 정책 — 오래된 이벤트 정리(무한 증가 방지). 기본 90일, pg_cron 일간 실행.
 -- =====================================================================
--- create or replace function public.prune_events(retain_days int default 30)
--- returns bigint language plpgsql security definer as $$
--- declare deleted bigint;
--- begin
---   delete from public.events where received_at < now() - make_interval(days => retain_days);
---   get diagnostics deleted = row_count; return deleted;
--- end $$;
--- -- pg_cron 예: select cron.schedule('periscribe-prune','0 3 * * *',$$select public.prune_events(30)$$);
+create or replace function public.prune_events(retain_days int default 90)
+returns bigint language plpgsql security definer
+set search_path = public as $$
+declare deleted bigint;
+begin
+  delete from public.events where received_at < now() - make_interval(days => retain_days);
+  get diagnostics deleted = row_count;
+  return deleted;
+end $$;
+revoke all on function public.prune_events(int) from anon, authenticated;  -- 관리자/cron만
+
+-- pg_cron: 매일 03:00 보존정책 실행(보존일 조정은 prune_events 인자 변경).
+create extension if not exists pg_cron;
+do $$
+begin
+  if exists (select 1 from cron.job where jobname = 'periscribe-prune') then
+    perform cron.unschedule('periscribe-prune');
+  end if;
+  perform cron.schedule('periscribe-prune', '0 3 * * *', $j$ select public.prune_events(90) $j$);
+end $$;

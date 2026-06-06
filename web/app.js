@@ -358,9 +358,11 @@
   }
 
   // ---------- 데이터 ----------
+  let lastRecv = null;   // 지금까지 본 최신 received_at (Realtime 끊김 후 따라잡기 기준)
   function upsert(ev) {
     if (!ev || !ev.event_id) return;
     store.set(ev.event_id, ev); // 멱등
+    if (ev.received_at && (lastRecv == null || ev.received_at > lastRecv)) lastRecv = ev.received_at;
   }
 
   // ---------- 페이지네이션(과거 더 불러오기) ----------
@@ -454,8 +456,33 @@
     updateLoadMore();
   }
 
+  // Realtime 끊김 동안 누락된 이벤트를 따라잡는다(서버필터 적용, lastRecv 이후, 멱등 머지).
+  let catchingUp = false;
+  async function catchUp() {
+    if (!appStarted || catchingUp) return;
+    catchingUp = true;
+    try {
+      if (lastRecv == null) { await loadHistory(); return; }
+      let q = client.from(table).select("*")
+        .gte("received_at", lastRecv)   // 경계 포함(동률 누락 방지) — 멱등이라 중복 안전
+        .order("received_at", { ascending: true })
+        .limit(2000);
+      q = applyServerFilters(q);
+      const { data, error } = await q;
+      if (!error && Array.isArray(data)) {
+        let added = 0;
+        for (const ev of data) { if (!store.has(ev.event_id)) added++; upsert(ev); if (ev.session_id) knownSessions.add(ev.session_id); }
+        if (added) { refreshFilterOptions(); render(true); }
+      }
+      await loadDevices();  // 디바이스 상태도 재동기화
+    } catch (_) { /* 일시 오류는 다음 트리거에서 재시도 */ }
+    finally { catchingUp = false; }
+  }
+
+  let evChannel = null, evResubTimer = null;
   function subscribe() {
-    client.channel("periscribe-events")
+    if (evChannel) { try { client.removeChannel(evChannel); } catch (_) {} evChannel = null; }
+    evChannel = client.channel("periscribe-events")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: table }, (payload) => {
         upsert(payload.new);
         if (dbTotal != null) dbTotal += 1;
@@ -468,8 +495,11 @@
         render(true);  // 새 이벤트는 맨 아래 → 따라가기
       })
       .subscribe((status) => {
-        if (status === "SUBSCRIBED") setConn("on", "실시간 구독 중");
-        else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") setConn("err", "Realtime 오류");
+        if (status === "SUBSCRIBED") { setConn("on", "실시간 구독 중"); catchUp(); }  // (재)구독 시 갭 메움
+        else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          setConn("err", "Realtime 재연결 중…");
+          if (!evResubTimer) evResubTimer = setTimeout(() => { evResubTimer = null; subscribe(); }, 3000);
+        }
       });
   }
 
@@ -553,8 +583,10 @@
     }
     healthChips.innerHTML = list.map((d) => {
       const on = isOnline(d);
+      const warn = d.last_error
+        ? `<span class="dev-warn" title="${esc(d.last_error)}">⚠</span>` : "";
       return `<span class="machine-chip ${on ? "online" : "stale"}" title="${esc(d.platform || "")} · v${esc(d.collector_version || "?")}">` +
-        `<span class="mdot"></span><span class="mname">${esc(deviceLabel(d))}</span>` +
+        `<span class="mdot"></span><span class="mname">${esc(deviceLabel(d))}</span>${warn}` +
         `<span class="mseen">${on ? "온라인" : (d.last_seen ? relTime(d.last_seen) : "대기")}</span></span>`;
     }).join("");
   }
@@ -566,15 +598,25 @@
       renderHealth(); renderDeviceList();
     }
   }
+  let devChannel = null, devResubTimer = null;
   function subscribeDevices() {
-    client.channel("periscribe-devices")
+    if (devChannel) { try { client.removeChannel(devChannel); } catch (_) {} devChannel = null; }
+    devChannel = client.channel("periscribe-devices")
       .on("postgres_changes", { event: "*", schema: "public", table: "devices" }, (p) => {
         if (p.new && p.new.id) deviceMap.set(p.new.id, p.new);
         else if (p.old && p.old.id) deviceMap.delete(p.old.id);
         renderHealth(); renderDeviceList();
-      }).subscribe();
+      }).subscribe((status) => {
+        if (status === "SUBSCRIBED") loadDevices();   // (재)구독 시 디바이스 상태 재동기화
+        else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          if (!devResubTimer) devResubTimer = setTimeout(() => { devResubTimer = null; subscribeDevices(); }, 3000);
+        }
+      });
   }
   setInterval(renderHealth, 5000);          // 상대시간/온라인 상태 주기 갱신
+  // 절전/백그라운드/네트워크 복귀 시 누락분 따라잡기
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) catchUp(); });
+  window.addEventListener("online", () => catchUp());
 
   // ---- 디바이스 관리(토큰 발급/revoke) ----
   function genToken() {
@@ -599,10 +641,13 @@
       const action = (d.revoked || d.uninstalled_at)
         ? `<button class="btn ghost btn-sm" data-delete="${d.id}">삭제</button>`
         : `<button class="btn ghost btn-sm" data-revoke="${d.id}">revoke</button>`;
+      const warn = (d.last_error && !d.uninstalled_at)
+        ? `<span class="dev-warn" title="${esc(d.last_error)}${d.last_error_at ? " (" + esc(relTime(d.last_error_at)) + ")" : ""}">⚠</span> `
+        : "";
       return `<div class="device-row">
         <div class="dev-main"><b>${esc(deviceLabel(d))}</b>
           <span class="dev-meta">${esc(d.machine_id || "미연결")} · ${esc(d.platform || "")}</span></div>
-        <div class="dev-status">${status}</div>${action}</div>`;
+        <div class="dev-status">${warn}${status}</div>${action}</div>`;
     }).join("");
   }
   async function addDevice(name) {
