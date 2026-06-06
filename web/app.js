@@ -486,7 +486,6 @@
   const deviceMap = new Map();              // device.id -> device row
   let currentUserId = null;                 // 토큰 발급 시 owner_id
   const HEALTH_ONLINE_MS = 75000;           // last_seen이 이 이내면 온라인(heartbeat 30s 여유)
-  const ingestUrl = (cfg.SUPABASE_URL || "").replace(/\/$/, "") + "/functions/v1/ingest";
 
   function relTime(iso) {
     const ms = Date.parse(iso);
@@ -571,12 +570,12 @@
       resultEl.innerHTML = '<span class="login-error">발급 실패: ' + esc(error.message) + "</span>";
       return;
     }
-    const installCmd = `periscribe.exe install --token ${token} --url ${ingestUrl}`;
     resultEl.style.display = "block";
     resultEl.innerHTML =
       '<div class="token-warn">⚠ 이 토큰은 지금 한 번만 표시됩니다. 안전하게 보관하세요.</div>' +
       '<div class="token-label">디바이스 토큰</div><pre class="token-box">' + esc(token) + "</pre>" +
-      '<div class="token-label">설치 명령 (해당 PC에서 실행)</div><pre class="token-box">' + esc(installCmd) + "</pre>";
+      '<div class="token-steps">설치: 위 <b>⬇ Collector 다운로드</b>로 받은 <b>periscribe.exe</b> 를 해당 PC에서 ' +
+      '실행한 뒤, 이 토큰을 붙여넣고 Enter. (자동 설치 + 부팅 시 자동 실행)</div>';
     loadDevices();
   }
 

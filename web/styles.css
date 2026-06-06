@@ -85,6 +85,15 @@ body.authed #login-gate { display: none; }
 }
 .link-btn:hover { color: var(--fg, #ddd); }
 
+/* ---- 머신 관리: 다운로드 행 + 설치 안내 ---- */
+.dl-row {
+  display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center;
+  padding: 10px 0; border-bottom: 1px solid var(--border); margin-bottom: 10px;
+}
+.dl-hint { color: var(--muted); font-size: 12px; }
+.token-steps { color: var(--muted); font-size: 12px; line-height: 1.5; margin-top: 6px; }
+.token-steps b { color: var(--fg, #ddd); }
+
 /* ---- 머신 헬스 바 ---- */
 .health-bar {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
