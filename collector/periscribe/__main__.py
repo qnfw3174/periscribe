@@ -37,6 +37,30 @@ DEFAULT_INGEST_URL = os.environ.get(
 )
 
 
+def _cleanup_stale_mei() -> None:
+    """onefile(windowed) 빌드가 종료 시 Tk DLL 잠금으로 못 지운 과거 _MEI 임시폴더를 청소.
+    현재 실행 중인 _MEIPASS는 제외. (정리 실패 메시지박스/디스크 누적 방지)"""
+    if not getattr(sys, "frozen", False):
+        return
+    import glob
+    import shutil
+    import tempfile
+    cur = getattr(sys, "_MEIPASS", "")
+    for d in glob.glob(os.path.join(tempfile.gettempdir(), "_MEI*")):
+        if d == cur or not os.path.isdir(d):
+            continue
+        shutil.rmtree(d, ignore_errors=True)  # 잠긴(사용 중) 폴더는 조용히 건너뜀
+
+
+def _exit_no_cleanup(code: int) -> None:
+    """Tk를 로드한 onefile에서 정상 종료 시 발생하는 '_MEI 삭제 실패' 메시지박스를 피한다.
+    부트로더의 atexit 정리를 건너뛰고 즉시 종료(임시폴더는 다음 실행의 _cleanup_stale_mei가 청소)."""
+    if getattr(sys, "frozen", False):
+        sys.stdout.flush() if sys.stdout else None
+        sys.stderr.flush() if sys.stderr else None
+        os._exit(code)
+
+
 def _data_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA") or str(Path.home())
     return Path(base) / "Periscribe"
@@ -351,6 +375,7 @@ def gui_setup() -> int:
     y = (app.winfo_screenheight() - h) // 3
     app.geometry(f"+{x}+{y}")
     app.mainloop()
+    _exit_no_cleanup(0)  # Tk 로드 onefile의 _MEI 정리 실패 팝업 회피
     return 0
 
 
@@ -426,6 +451,7 @@ def _gui_setup_tk() -> int:
     root.geometry(f"+{x}+{y}")
 
     root.mainloop()
+    _exit_no_cleanup(0)  # Tk 로드 onefile의 _MEI 정리 실패 팝업 회피
     return 0
 
 
@@ -435,6 +461,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+    _cleanup_stale_mei()  # 묵은 _MEI 임시폴더 청소(있으면)
 
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "install":

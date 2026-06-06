@@ -12,7 +12,7 @@ $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $collector = Resolve-Path (Join-Path $here "..\collector")
 
-python -m pip install --quiet --upgrade pyinstaller customtkinter
+python -m pip install --quiet --upgrade pyinstaller customtkinter cryptography
 python -m PyInstaller --noconfirm --onefile --windowed --name periscribe `
   --paths "$collector" `
   --collect-all customtkinter `
