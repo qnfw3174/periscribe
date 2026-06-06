@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Periscribe — 설계 흐름 문서</title>
+<style>
+  :root{--bg:#0f1115;--panel:#171a21;--ink:#e6e9ef;--muted:#8a93a6;--border:#2a2f3a;--accent:#6ea8fe;--ok:#4cd585;--warn:#ffb454}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Pretendard","Malgun Gothic","Segoe UI",system-ui,sans-serif;line-height:1.6}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 24px 80px}
+  h1{font-size:24px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:6px}
+  .legend{color:var(--muted);font-size:12px;margin-bottom:22px}
+  .legend b.done{color:var(--ok)} .legend b.prop{color:var(--warn)}
+  h2{font-size:18px;margin:30px 0 6px;padding-top:12px;border-top:1px solid var(--border)}
+  h3{font-size:15px;margin:20px 0 4px;color:#cfd5e0}
+  p.cap{color:var(--muted);font-size:12.5px;margin:2px 0 8px}
+  .diagram{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px;margin:8px 0 4px;overflow:auto}
+  .mermaid{font-size:13px}
+  code{background:#11141a;border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}
+  th,td{border:1px solid var(--border);padding:6px 9px;text-align:left}
+  th{background:var(--panel)}
+  .note{background:#1a1410;border:1px solid #5a4420;border-radius:8px;padding:8px 12px;font-size:12.5px;color:#f0c987;margin:8px 0}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⌖ Periscribe — 설계 흐름 문서</h1>
+  <div class="sub">컴포넌트 구조 · 핵심 로직(키/DEK) · 시나리오별 시퀀스 · 상태도 · 데이터 모델</div>
+  <div class="legend">범례: <b class="done">✅ 구현됨</b>(커밋 e8924e5) · <b class="prop">🟡 제안(미확정)</b> &nbsp;|&nbsp; 원본: <code>docs/design-flows.md</code></div>
+
+  <h2>1. 컴포넌트 구조 (Context)</h2>
+  <p class="cap">평문 키도 평문 payload도 중앙 서버를 통과하지 않는다. 암호화=Collector, 복호화=브라우저.</p>
+  <div class="diagram"><pre class="mermaid">
+flowchart LR
+  subgraph PC["① 테넌트 PC (머신마다 N대)"]
+    CC["Claude Code"] --&gt;|"transcript.jsonl (append-only)"| COL["Collector&lt;br/&gt;(읽기전용 watch)"]
+    CFG[("config.json&lt;br/&gt;device_token · 평문 DEK")]
+    COL &lt;--&gt; CFG
+  end
+  subgraph SB["② Supabase 중앙 (운영자 소유)"]
+    ING["Edge Fn: ingest&lt;br/&gt;(service_role · 평문 못 봄)"]
+    EV[("events&lt;br/&gt;meta=평문 / payload=암호문")]
+    DV[("devices&lt;br/&gt;wrapped_dek")]
+    OK[("owner_keys&lt;br/&gt;공개키 + 봉인 개인키")]
+    ING --&gt; EV
+    ING --&gt; DV
+    ING -. "공개키 조회" .-&gt; OK
+  end
+  subgraph WEB["③ 관리자 브라우저"]
+    UI["Web UI&lt;br/&gt;(정적 + supabase-js)"]
+  end
+  COL ==&gt;|"HTTPS: 암호문 + 봉인DEK&lt;br/&gt;device_token 인증"| ING
+  ING --&gt;|"enc.public_key · backfill"| COL
+  UI --&gt;|"REST + Realtime (암호문)"| EV
+  UI --&gt;|"owner_keys / devices 조회"| OK
+  UI -. "anon + RLS" .-&gt; DV
+  </pre></div>
+
+  <h2>2. 핵심 로직: DEK 생성 + 공개키 수신 <span style="color:var(--ok)">✅</span></h2>
+  <p class="cap">per-device DEK는 머신에서 랜덤 생성, owner 공개키는 하트비트 응답으로 수신. 패스프레이즈는 컬렉터에 안 들어감.</p>
+  <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant COL as Collector
+  participant ING as ingest (Edge Fn)
+  participant DB as Postgres
+  Note over COL: 설치 직후 config.dek="" · encrypt=true
+  COL-&gt;&gt;ING: beat() {device_token, machine}
+  ING-&gt;&gt;DB: devices 조회 (token_hash)
+  ING-&gt;&gt;DB: owner_keys.public_key 조회
+  ING--&gt;&gt;COL: { enc:{public_key, kid}, backfill }
+  alt public_key 없음 (관리자 미설정)
+    Note over COL: 적재 보류 (store-and-forward)&lt;br/&gt;오프셋 전진 X · 다음 beat 재시도
+  else public_key 수신
+    COL-&gt;&gt;COL: DEK = os.urandom(32) ← 로컬 랜덤
+    COL-&gt;&gt;COL: wrapped_dek = RSA-OAEP(public_key, DEK)
+    COL-&gt;&gt;COL: config.json 에 DEK 영속
+    COL-&gt;&gt;ING: 이후 beat/emit 마다 wrapped_dek 동봉(자가치유)
+    ING-&gt;&gt;DB: devices.wrapped_dek = wrapped_dek
+  end
+  </pre></div>
+
+  <h3>2.1 관리자 키 셋업 / 잠금해제 (웹) ✅</h3>
+  <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor Admin as 관리자
+  participant WEB as Web UI
+  participant DB as Postgres
+  alt owner_keys 없음 → 최초 셋업
+    Admin-&gt;&gt;WEB: 암호화 패스프레이즈 입력
+    WEB-&gt;&gt;WEB: RSA-OAEP 3072 키쌍 생성
+    WEB-&gt;&gt;WEB: KEK = PBKDF2(passphrase, salt, 600k)
+    WEB-&gt;&gt;WEB: wrapped_private_key = AES-GCM(KEK, 개인키)
+    WEB-&gt;&gt;WEB: 복구코드 생성 → recovery 봉인
+    WEB-&gt;&gt;DB: owner_keys insert
+    WEB--&gt;&gt;Admin: 복구코드 1회 표시
+  else owner_keys 있음 → 잠금 해제
+    Admin-&gt;&gt;WEB: 패스프레이즈 입력
+    WEB-&gt;&gt;DB: owner_keys 조회
+    WEB-&gt;&gt;WEB: KEK 유도 → 개인키 unwrap (실패=틀린 패스프레이즈)
+    WEB-&gt;&gt;WEB: 개인키 sessionStorage 보관
+  end
+  </pre></div>
+
+  <h2>3. 시나리오별 흐름</h2>
+
+  <h3>S1. 설치 → 로그 적재 → 조회 (정상 E2E) ✅</h3>
+  <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor Admin as 관리자
+  participant WEB as Web
+  participant COL as Collector
+  participant ING as ingest
+  participant DB as Postgres
+  Note over Admin,WEB: 선행 — 관리자 키 셋업(§2.1) 1회
+  Admin-&gt;&gt;WEB: 토큰 발급
+  WEB-&gt;&gt;DB: devices insert (token_hash)
+  WEB--&gt;&gt;Admin: device_token (1회 표시)
+  Admin-&gt;&gt;COL: exe 실행 + 토큰 입력 (설치=토큰만)
+  Note over COL: DEK 부트스트랩(§2)
+  COL-&gt;&gt;ING: beat
+  ING--&gt;&gt;COL: enc.public_key
+  COL-&gt;&gt;COL: DEK 생성 → 봉인 → config 저장
+  loop 폴링 0.4s
+    COL-&gt;&gt;COL: 새 줄 파싱 → 이벤트
+    COL-&gt;&gt;COL: payload/raw 암호화 · enc_version=1
+    COL-&gt;&gt;ING: emit [암호문] + wrapped_dek
+    ING-&gt;&gt;DB: events upsert(멱등) · devices 갱신
+  end
+  Note over Admin,WEB: 조회
+  Admin-&gt;&gt;WEB: 로그인 + 패스프레이즈
+  WEB-&gt;&gt;DB: owner_keys → 개인키 복원(세션)
+  WEB-&gt;&gt;DB: events 조회 + Realtime · devices.wrapped_dek
+  WEB-&gt;&gt;WEB: device DEK unwrap → payload 복호
+  WEB--&gt;&gt;Admin: 평문 로그 표시 ✅ (키 없으면 🔒)
+  </pre></div>
+
+  <h3>S2. 컬렉터 재시작 (DEK 유지) ✅</h3>
+  <div class="diagram"><pre class="mermaid">
+flowchart TD
+  A["프로세스 시작"] --&gt; B{"config.dek 있음?"}
+  B -- "yes" --&gt; C["set_dek(config.dek)&lt;br/&gt;즉시 암호화 가능"]
+  B -- "no" --&gt; D["부트스트랩 대기(§2)"]
+  C --&gt; E["첫 beat에서 공개키 받아&lt;br/&gt;wrapped_dek 재업로드(자가치유)"]
+  E --&gt; F["정상 암호화 적재"]
+  D --&gt; F
+  </pre></div>
+
+  <h3>S3. 암호화 키 대기 / 적재 보류 ✅</h3>
+  <p class="cap">관리자 미설정·네트워크 단절 시 평문을 절대 올리지 않고 보류.</p>
+  <div class="diagram"><pre class="mermaid">
+flowchart TD
+  A["폴링 1회"] --&gt; HB["heartbeat → enc.public_key 시도"]
+  HB --&gt; B{"encrypt=true?"}
+  B -- "no" --&gt; P["평문 적재(dry-run)"]
+  B -- "yes" --&gt; C{"DEK 보유?"}
+  C -- "yes" --&gt; E["암호화 적재"]
+  C -- "no" --&gt; F{"공개키 수신?"}
+  F -- "no" --&gt; H["적재 보류&lt;br/&gt;오프셋 유지"] --&gt; A
+  F -- "yes" --&gt; G["DEK 생성·봉인·저장"] --&gt; E
+  E --&gt; A
+  P --&gt; A
+  </pre></div>
+
+  <h3>S4. Revoke (관리자 차단) ✅</h3>
+  <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor Admin as 관리자
+  participant WEB as Web
+  participant DB as Postgres
+  participant COL as Collector
+  participant ING as ingest
+  Admin-&gt;&gt;WEB: 머신 관리 → revoke
+  WEB-&gt;&gt;DB: devices.revoked = true
+  loop 다음 호출
+    COL-&gt;&gt;ING: emit / beat
+    ING-&gt;&gt;DB: devices 조회 (revoked=true)
+    ING--&gt;&gt;COL: 401 revoked
+    COL-&gt;&gt;COL: SinkAuthError → 지수 백오프
+  end
+  Note over COL: 연속 10회 401 → 자가 종료
+  Note over WEB,DB: 헬스바 숨김 · events/wrapped_dek 유지 → 과거 로그 복호 OK
+  </pre></div>
+
+  <h3>S5. Uninstall (제거 신호 + 로컬 정리) ✅</h3>
+  <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor User as 머신 사용자
+  participant BAT as uninstall.bat
+  participant ING as ingest
+  participant DB as Postgres
+  User-&gt;&gt;BAT: 실행
+  BAT-&gt;&gt;ING: POST {device_token, uninstall:true}
+  ING-&gt;&gt;DB: uninstalled_at=now · revoked=true
+  BAT-&gt;&gt;BAT: 자동시작 해제 + 프로세스 종료
+  BAT-&gt;&gt;BAT: rmdir %LOCALAPPDATA%\Periscribe&lt;br/&gt;(config·평문DEK·checkpoint 삭제)
+  Note over DB: "🗑 제거됨" · wrapped_dek 유지 → 과거 로그 복호 OK&lt;br/&gt;사라지는 건 로컬 평문 DEK뿐
+  </pre></div>
+
+  <h3>S6. 디바이스 행 완전 삭제 (현재) ✅ — ⚠ 데이터 접근 손실</h3>
+  <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor Admin as 관리자
+  participant WEB as Web
+  participant DB as Postgres
+  Admin-&gt;&gt;WEB: 머신 관리 → 삭제(완전)
+  WEB-&gt;&gt;DB: devices delete (행 제거)
+  Note over DB: wrapped_dek 사라짐 → events.device_id 남아도&lt;br/&gt;⚠ 그 머신 암호 로그 영구 복호 불가(🔒)
+  </pre></div>
+  <div class="note">권장: E2EE에선 과거 로그를 보려면 삭제 대신 <b>revoke/제거됨 상태 유지</b>.</div>
+
+  <h3>S7. 삭제 후 재설치 — 현재 동작 (새 디바이스) ✅</h3>
+  <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor Admin as 관리자
+  participant WEB as Web
+  participant COL2 as 재설치 Collector
+  participant ING as ingest
+  participant DB as Postgres
+  Note over COL2: 삭제로 옛 config(평문 DEK) 소실
+  Admin-&gt;&gt;WEB: 새 토큰 발급
+  WEB-&gt;&gt;DB: devices insert (새 행 · 새 device_id)
+  Admin-&gt;&gt;COL2: 새 토큰 입력
+  COL2-&gt;&gt;ING: beat → enc.public_key
+  COL2-&gt;&gt;COL2: 새 DEK 생성·봉인
+  COL2-&gt;&gt;DB: 새 devices.wrapped_dek
+  loop
+    COL2-&gt;&gt;DB: 새 events (새 device_id · 새 DEK)
+  end
+  Note over WEB,DB: 옛 행 남기면 옛 로그 복호 OK&lt;br/&gt;단 관리 목록엔 디바이스 2개(연속성 X)
+  </pre></div>
+
+  <h3>S8. 디바이스 연속성 — machine_guid 자동 + DEK 키 히스토리 ✅</h3>
+  <p class="cap">새 토큰 발급해 그 머신에 꽂으면 끝. 같은 머신(machine_guid)이면 ingest가 같은 디바이스로 자동 합침. 관리자 매칭 불필요.</p>
+  <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor Admin as 관리자
+  participant WEB as Web
+  participant COL2 as 재설치 Collector
+  participant ING as ingest
+  participant DB as Postgres
+  Note over COL2: 삭제로 옛 config(평문 DEK) 소실 · machine_guid는 OS라 그대로
+  Admin-&gt;&gt;WEB: 새 토큰 발급(아무 거나)
+  WEB-&gt;&gt;DB: devices insert (토큰행 R2)
+  Admin-&gt;&gt;COL2: 새 토큰 입력 (같은 머신)
+  COL2-&gt;&gt;ING: beat {machine_guid=G}
+  ING-&gt;&gt;DB: (owner,G) 기존행 R1 발견 → R2 삭제 · R1.token_hash=새토큰
+  ING--&gt;&gt;COL2: enc.public_key
+  COL2-&gt;&gt;COL2: 새 DEK 세대 (새 kid)
+  COL2-&gt;&gt;ING: wrapped_dek(새 kid)
+  ING-&gt;&gt;DB: R1.dek_keys[새 kid] = 봉인DEK (누적)
+  loop
+    COL2-&gt;&gt;DB: 새 events (device_id=R1 · kid=새 kid)
+  end
+  Note over WEB,DB: 옛 이벤트→dek_keys[옛 kid] · 새 이벤트→dek_keys[새 kid]&lt;br/&gt;관리 목록 디바이스 1개(연속) ✅ · revoked guid는 차단
+  </pre></div>
+
+  <h2>4. 디바이스 수명주기 상태도</h2>
+  <div class="diagram"><pre class="mermaid">
+stateDiagram-v2
+  [*] --&gt; issued: 토큰 발급
+  issued: 발급됨(미설치)
+  online: 온라인
+  stale: 대기(만료)
+  revoked: revoked
+  removed: 제거됨
+  issued --&gt; online: 설치+하트비트
+  online --&gt; stale: 75s 무응답
+  stale --&gt; online: 하트비트
+  online --&gt; revoked: 관리자 revoke
+  stale --&gt; revoked: 관리자 revoke
+  online --&gt; removed: uninstall 신호
+  stale --&gt; removed: uninstall 신호
+  online --&gt; online: 재설치(같은 machine_guid)→같은 행 자동 연결
+  revoked --&gt; [*]: 완전 삭제(⚠복호 손실)
+  removed --&gt; [*]: 완전 삭제
+  note right of revoked: revoked/제거됨 guid는 재설치해도 차단
+  </pre></div>
+
+  <h2>5. 데이터 모델 (ER)</h2>
+  <div class="diagram"><pre class="mermaid">
+erDiagram
+  auth_users ||--o{ devices : "owns"
+  auth_users ||--|| owner_keys : "has"
+  auth_users ||--o{ events : "owns"
+  devices ||--o{ events : "device_id(FK없음)"
+  owner_keys {
+    uuid owner_id PK
+    text public_key "RSA 공개키(SPKI)"
+    jsonb wrapped_private_key "KEK로 봉인한 개인키"
+    jsonb wrapped_private_key_recovery "복구코드 봉인"
+    jsonb kdf_params "salt·iterations"
+  }
+  devices {
+    uuid id PK
+    uuid owner_id FK
+    text token_hash "sha256(token)"
+    bool revoked
+    timestamptz uninstalled_at
+    text wrapped_dek "공개키로 봉인한 DEK"
+    int dek_kid
+  }
+  events {
+    text event_id PK "멱등키"
+    uuid owner_id
+    uuid device_id
+    int enc_version "0=평문/1=암호문"
+    jsonb payload "암호문 envelope"
+    jsonb raw
+  }
+  </pre></div>
+
+  <h2>6. 암호화 경계 요약</h2>
+  <table>
+    <tr><th>자산</th><th>위치</th><th>운영자 접근</th></tr>
+    <tr><td>평문 payload</td><td>Collector 메모리 · 브라우저(복호 후)</td><td>❌</td></tr>
+    <tr><td>평문 DEK</td><td>머신 config.json</td><td>❌</td></tr>
+    <tr><td>봉인 DEK</td><td>devices.wrapped_dek</td><td>⭕ 암호문(개인키 없으면 무용)</td></tr>
+    <tr><td>owner 개인키</td><td>브라우저(세션) / DB(봉인본)</td><td>❌ / ⭕ 봉인본</td></tr>
+    <tr><td>owner 공개키</td><td>DB · 응답</td><td>⭕ 비밀 아님</td></tr>
+    <tr><td>패스프레이즈</td><td>사람 머릿속</td><td>❌</td></tr>
+    <tr><td>메타데이터</td><td>events(평문)</td><td>⭕</td></tr>
+  </table>
+  <div class="note">⚠ 한계: 복호화 웹 JS를 운영자가 서빙 → 악의적 운영자의 복호화-시점 키 탈취는 못 막음(at-rest 제로지식까지가 보장 범위). 상세 <code>docs/E2EE-DESIGN.md §7</code>.</div>
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad:true, theme:'dark', securityLevel:'loose',
+    sequence:{ useMaxWidth:true }, flowchart:{ useMaxWidth:true } });
+</script>
+</body>
+</html>

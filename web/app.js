@@ -85,16 +85,20 @@
   }
   async function unwrapPriv(kek, env) { return importPriv(await aesUnwrap(kek, env)); }
 
-  // 이 디바이스의 DEK 복원(개인키로 RSA-OAEP unwrap → AES 키). 캐시.
-  async function dekForDevice(deviceId) {
+  // 이 디바이스의 특정 세대(kid) DEK 복원(개인키로 RSA-OAEP unwrap → AES 키). (device,kid)별 캐시.
+  // 재설치로 DEK 세대가 늘어도 dek_keys[kid]에서 해당 세대를 찾아 옛 로그까지 복호.
+  async function dekForDevice(deviceId, kid) {
     if (!deviceId || !ownerPrivKey) return null;
-    if (dekCache.has(deviceId)) return dekCache.get(deviceId);
+    const ck = deviceId + ":" + kid;
+    if (dekCache.has(ck)) return dekCache.get(ck);
     const d = deviceMap.get(deviceId);
-    if (!d || !d.wrapped_dek) return null;
+    if (!d) return null;
+    const wrapped = (d.dek_keys && d.dek_keys[String(kid)]) || d.wrapped_dek; // 폴백: 단일 wrapped_dek
+    if (!wrapped) return null;
     try {
-      const raw = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, ownerPrivKey, b64ToBuf(d.wrapped_dek));
+      const raw = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, ownerPrivKey, b64ToBuf(wrapped));
       const key = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["decrypt"]);
-      dekCache.set(deviceId, key);
+      dekCache.set(ck, key);
       return key;
     } catch (e) { return null; }
   }
@@ -106,7 +110,8 @@
   // 암호화 행을 제자리 복호화(payload/raw 평문 객체로 치환). 실패 시 _encLocked.
   async function decryptEvent(ev) {
     if (!ev || ev.enc_version !== 1 || ev._dec) return ev;
-    const dek = await dekForDevice(ev.device_id);
+    const kid = (ev.payload && ev.payload.kid) || (ev.raw && ev.raw.kid) || ev.dek_kid || 1;
+    const dek = await dekForDevice(ev.device_id, kid);
     if (!dek) { ev._encLocked = true; return ev; }
     try {
       if (ev.payload && ev.payload.ct) ev.payload = await decField(dek, ev.payload);
@@ -697,9 +702,15 @@
         if (p.new && p.new.id) {
           const prev = deviceMap.get(p.new.id);
           deviceMap.set(p.new.id, p.new);
-          // 봉인 DEK가 새로 도착/변경되면 캐시 무효화 + 잠긴 이벤트 재복호화.
-          if (p.new.wrapped_dek && (!prev || prev.wrapped_dek !== p.new.wrapped_dek)) {
-            dekCache.delete(p.new.id);
+          // 봉인 DEK(세대)가 새로 도착/변경되면 그 디바이스 캐시 무효화 + 잠긴 이벤트 재복호화.
+          const changed = !prev
+            || JSON.stringify(prev.dek_keys || {}) !== JSON.stringify(p.new.dek_keys || {})
+            || prev.wrapped_dek !== p.new.wrapped_dek;
+          const hasKey = p.new.wrapped_dek || (p.new.dek_keys && Object.keys(p.new.dek_keys).length);
+          if (changed && hasKey) {
+            for (const k of Array.from(dekCache.keys())) {
+              if (k.indexOf(p.new.id + ":") === 0) dekCache.delete(k);
+            }
             redecryptLocked();
           }
         } else if (p.old && p.old.id) deviceMap.delete(p.old.id);

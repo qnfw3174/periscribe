@@ -76,6 +76,14 @@ create index if not exists devices_owner_idx on public.devices(owner_id);
 -- 기존 배포(devices 테이블이 이미 있는 경우)에도 E2EE 컬럼을 추가(create table if not exists는 스킵되므로).
 alter table public.devices add column if not exists wrapped_dek text;
 alter table public.devices add column if not exists dek_kid    int not null default 1;
+-- 디바이스 연속성: machine_guid(머신 고유 식별, Windows MachineGuid)로 재설치해도 같은 행에 연결.
+--   ingest가 (owner_id, machine_guid)로 디바이스를 찾는다. 재설치 시 새 토큰이라도 guid가 같으면 이어짐.
+alter table public.devices add column if not exists machine_guid text;
+-- dek_keys: kid→봉인DEK 히스토리. 재설치로 새 DEK 세대가 생겨도 옛 세대를 덮어쓰지 않고 누적 → 옛 로그 복호 유지.
+alter table public.devices add column if not exists dek_keys jsonb not null default '{}'::jsonb;
+-- (owner, machine_guid) 고유: 머신당 디바이스 1개. guid 없는 레거시 행은 제외(partial).
+create unique index if not exists devices_owner_guid_uidx
+  on public.devices(owner_id, machine_guid) where machine_guid is not null;
 
 do $$ begin
   if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and tablename='devices') then

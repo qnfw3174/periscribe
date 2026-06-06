@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import signal
 import sys
 import time
@@ -77,13 +78,14 @@ class Collector:
             return
         enc = resp.get("enc") or {}
         pub = enc.get("public_key")
-        kid = int(enc.get("kid", 1) or 1)
         if not pub:
             return
-        self.sink.set_public_key(pub, kid)            # type: ignore[attr-defined]
+        self.sink.set_public_key(pub)                 # type: ignore[attr-defined]
         # 아직 이 머신용 DEK가 없으면 로컬 생성·영속(패스프레이즈 불필요). 다음 하트비트에 봉인본 동봉.
+        # kid = DEK '세대' 식별자(랜덤). 재설치하면 새 세대가 생겨 dek_keys에 누적된다(옛 로그 복호 유지).
         if not self.sink.has_dek():                    # type: ignore[attr-defined]
             dek = crypto.gen_dek()
+            kid = secrets.randbits(31) or 1
             self.config.persist_dek(crypto.dek_to_b64(dek), kid)
             self.sink.set_dek(dek, kid)                # type: ignore[attr-defined]
             self._log(f"[periscribe] 암호화 키(per-device DEK) 생성·등록 (kid={kid})")

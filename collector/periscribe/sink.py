@@ -8,12 +8,31 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import urllib.error
 import urllib.request
 from typing import Any, Optional, Protocol
 
 from . import crypto
+
+
+def machine_guid() -> str:
+    """머신 고유 식별자. 재설치해도 안 바뀌어 디바이스 연속성에 쓰임.
+    Windows: 레지스트리 MachineGuid(설치마다 고유, 앱 재설치에도 유지). 폴백: hostname."""
+    if os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography",
+                0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY,
+            ) as k:
+                val, _ = winreg.QueryValueEx(k, "MachineGuid")
+                if val:
+                    return str(val)
+        except Exception:
+            pass
+    return platform.node()
 
 
 class Sink(Protocol):
@@ -57,6 +76,8 @@ class IngestSink:
             "platform": f"{platform.system()} {platform.release()}",
             "version": collector_version,
             "machine_id": machine_id,
+            # 디바이스 연속성 식별자(재설치해도 같은 머신=같은 디바이스). 표시는 hostname.
+            "machine_guid": machine_guid(),
             "last_error": None,
         }
 
@@ -64,11 +85,11 @@ class IngestSink:
     def has_dek(self) -> bool:
         return self._dek is not None
 
-    def set_public_key(self, public_key_spki_b64: str, kid: int = 1) -> None:
-        """하트비트로 받은 owner 공개키 등록. DEK가 있으면 봉인본을 하트비트에 싣는다."""
+    def set_public_key(self, public_key_spki_b64: str) -> None:
+        """하트비트로 받은 owner 공개키 등록. DEK가 있으면 봉인본을 하트비트에 싣는다.
+        (공개키 kid와 DEK 세대 kid는 별개 — DEK kid는 set_dek가 정한다.)"""
         if public_key_spki_b64 and public_key_spki_b64 != self._pubkey:
             self._pubkey = public_key_spki_b64
-            self._dek_kid = kid
             self._refresh_wrapped()
 
     def set_dek(self, dek: bytes, kid: int = 1) -> None:

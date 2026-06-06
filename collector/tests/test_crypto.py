@@ -47,7 +47,7 @@ def test_sink_emit_encrypts_payload_and_raw():
     priv, spki = _owner_keypair()
     dek = crypto.gen_dek()
     sink = IngestSink("http://x/ingest", "tok", dek=dek, dek_kid=1)
-    sink.set_public_key(spki, 1)
+    sink.set_public_key(spki)
     posted = {}
 
     def fake_post(rows):

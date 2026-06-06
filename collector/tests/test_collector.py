@@ -24,10 +24,11 @@ class EncSink:
         pass
     def has_dek(self):
         return self.dek is not None
-    def set_public_key(self, pub, kid=1):
+    def set_public_key(self, pub):
         self.pub = pub
     def set_dek(self, dek, kid=1):
         self.dek = dek
+        self.kid = kid
 
 
 def test_handle_enc_bootstraps_dek(tmp_path):
@@ -45,7 +46,7 @@ def test_handle_enc_bootstraps_dek(tmp_path):
     c._handle_enc({"enc": {"public_key": "PUBKEY", "kid": 1}})
     assert sink.pub == "PUBKEY"
     assert sink.dek is not None and len(sink.dek) == 32
-    assert cfg.dek and cfg.dek_kid == 1
+    assert cfg.dek and cfg.dek_kid  # kid는 랜덤 세대 식별자(0 아님)
     # 재호출 시 이미 DEK 있으면 새로 만들지 않음(같은 키 유지)
     first = sink.dek
     c._handle_enc({"enc": {"public_key": "PUBKEY", "kid": 1}})

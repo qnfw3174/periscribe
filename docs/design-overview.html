@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>Periscribe — 전체 설계 한 장</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --ink:#e6e9ef; --muted:#8a93a6;
+    --border:#2a2f3a; --accent:#6ea8fe; --ok:#4cd585; --warn:#ffb454; --crit:#ff6b6b;
+    --done:#173a2a; --done-b:#2e6b4a; --prop:#3a2f17; --prop-b:#7a5a22;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#0a0c10;color:var(--ink);
+    font-family:"Pretendard","Malgun Gothic","Segoe UI",system-ui,sans-serif;}
+  /* 1280x720 슬라이드. 브라우저에서 인쇄(가로) → PDF/이미지 캡처용 */
+  .slide{width:1280px;min-height:720px;margin:18px auto;background:
+    radial-gradient(1200px 500px at 70% -10%, #16203a 0%, var(--bg) 55%);
+    border:1px solid var(--border);border-radius:16px;padding:22px 26px 18px;}
+  .head{display:flex;align-items:baseline;gap:14px;border-bottom:1px solid var(--border);padding-bottom:10px}
+  .logo{font-size:22px}
+  .title{font-size:21px;font-weight:800;letter-spacing:.2px}
+  .sub{font-size:12.5px;color:var(--muted)}
+  .legend{margin-left:auto;font-size:11px;color:var(--muted);display:flex;gap:12px;align-items:center}
+  .pill{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;border:1px solid}
+  .pill.done{background:var(--done);border-color:var(--done-b);color:#9be9c0}
+  .pill.prop{background:var(--prop);border-color:var(--prop-b);color:#f0c987}
+
+  .flow{display:grid;grid-template-columns:1fr 44px 1.25fr 44px 1fr;gap:0;margin-top:14px;align-items:stretch}
+  .zone{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px 13px;display:flex;flex-direction:column}
+  .zone h3{margin:0 0 4px;font-size:13.5px}
+  .zone .who{font-size:10.5px;color:var(--muted);margin-bottom:9px}
+  .arrowcol{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--accent)}
+  .arrow{font-size:24px;line-height:1}
+  .arrow .lbl{font-size:9.5px;color:var(--muted);display:block;text-align:center;max-width:42px}
+
+  .step{font-size:11.5px;line-height:1.5;margin:2px 0;color:#cfd5e0}
+  .step b{color:var(--ink)}
+  .k{color:var(--accent);font-weight:700}
+  .lock{color:var(--ok)}
+  .box{background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:7px 9px;margin:6px 0;font-size:11px;line-height:1.5}
+  .box .t{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:2px}
+  .ct{color:var(--crit)}  /* ciphertext */
+  .pt{color:var(--ok)}    /* plaintext-meta */
+  .mono{font-family:ui-monospace,Consolas,monospace}
+
+  .band{margin-top:12px;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:10px 14px}
+  .band .t{font-size:11px;color:var(--muted);letter-spacing:.6px;text-transform:uppercase;margin-bottom:6px}
+  .chain{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+  .node{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:5px 9px}
+  .node small{display:block;color:var(--muted);font-size:9.5px}
+  .op{color:var(--accent);font-size:11px}
+  .sep{color:var(--muted)}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+  .card{border-radius:12px;padding:11px 14px;border:1px solid var(--border);background:var(--panel)}
+  .card h4{margin:0 0 7px;font-size:13px;display:flex;align-items:center;gap:7px}
+  .card ul{margin:0;padding-left:16px}
+  .card li{font-size:11.5px;line-height:1.6;margin:1px 0}
+  .yes{color:var(--ok)} .no{color:var(--crit)} .cau{color:var(--warn)}
+  .foot{margin-top:11px;display:flex;gap:10px;font-size:11px;color:var(--muted);flex-wrap:wrap}
+  .tag{padding:3px 9px;border-radius:7px;border:1px solid var(--border);background:var(--panel)}
+  @media print{ body{background:#fff} .slide{margin:0;border:none;border-radius:0} @page{size:landscape} }
+</style>
+</head>
+<body>
+<div class="slide">
+
+  <div class="head">
+    <span class="logo">⌖</span>
+    <div>
+      <div class="title">Periscribe — 전체 설계 한 장</div>
+      <div class="sub">호스팅 SaaS · 종단간 암호화(E2EE) · at-rest 제로지식 — “운영자(나)조차 로그 내용을 못 읽는다”</div>
+    </div>
+    <div class="legend">
+      <span class="pill done">■ 구현 완료</span>
+      <span class="pill prop">■ 제안(미확정)</span>
+    </div>
+  </div>
+
+  <!-- 3-zone 데이터 흐름 -->
+  <div class="flow">
+    <!-- ① 테넌트 PC -->
+    <div class="zone">
+      <h3>① 테넌트 PC <span style="color:var(--muted);font-weight:400">(머신마다 N대)</span></h3>
+      <div class="who">로컬에서 도는 건 Collector 하나</div>
+      <div class="step"><b>Claude Code</b> → transcript.jsonl</div>
+      <div class="step">↓ 읽기전용 watch (개입 안 함)</div>
+      <div class="step"><b>Collector</b></div>
+      <div class="step">· 파싱 → 이벤트 정규화</div>
+      <div class="step">· payload/raw 를 <span class="k">per-device DEK</span>로 암호화</div>
+      <div class="step">· 그 DEK를 <span class="k">owner 공개키</span>로 봉인</div>
+      <div class="box">
+        <div class="t">config.json (로컬에만)</div>
+        평문 DEK 보관 · <b>삭제하면 이 평문본만</b> 사라짐
+      </div>
+    </div>
+
+    <div class="arrowcol">
+      <span class="arrow">▶</span>
+      <span class="lbl">암호문 + 봉인 DEK<br/>(device_token 인증)</span>
+    </div>
+
+    <!-- ② Supabase 중앙 -->
+    <div class="zone">
+      <h3>② Supabase 중앙 <span style="color:var(--muted);font-weight:400">(운영자 소유)</span></h3>
+      <div class="who">Edge Fn <b>ingest</b> (service_role · <b>평문 못 봄</b>)</div>
+      <div class="step">· device_token 검증 → owner 확정</div>
+      <div class="step">· events 멱등 insert · 공개키 내려줌 · 봉인DEK 수령</div>
+      <div class="box">
+        <div class="t">events</div>
+        meta(머신·시각·도구·실패) = <span class="pt">평문</span><br/>
+        payload / raw = <span class="ct">암호문</span> · enc_version=1 · <span class="k">kid</span>
+      </div>
+      <div class="box">
+        <div class="t">devices</div>
+        <span class="mono">wrapped_dek</span> = 봉인된 per-device DEK<br/>
+        <span style="color:var(--warn)">제안:</span> <span class="mono">dek_keys{kid→봉인DEK}</span> 키 히스토리
+      </div>
+      <div class="box">
+        <div class="t">owner_keys</div>
+        공개키 + <b>봉인된 개인키</b>(+복구본) · kdf_params
+      </div>
+    </div>
+
+    <div class="arrowcol">
+      <span class="arrow">▶</span>
+      <span class="lbl">조회 / Realtime<br/>(암호문 그대로)</span>
+    </div>
+
+    <!-- ③ 관리자 웹 -->
+    <div class="zone">
+      <h3>③ 관리자 브라우저 <span style="color:var(--muted);font-weight:400">(웹)</span></h3>
+      <div class="who">정적 페이지 + Supabase client</div>
+      <div class="step"><b>로그인</b>(이메일+비번) + <span class="k">암호화 패스프레이즈</span></div>
+      <div class="step">↓ PBKDF2 → KEK</div>
+      <div class="step">→ <b>owner 개인키 복원</b>(세션)</div>
+      <div class="step">행마다: device_id + <span class="k">kid</span></div>
+      <div class="step">→ 봉인DEK를 개인키로 풀고</div>
+      <div class="step">→ payload 복호 <span class="lock">✅</span> (키 없으면 <span class="lock">🔒</span>)</div>
+      <div class="box">
+        패스프레이즈는 <b>서버로 절대 안 감</b>.<br/>
+        개인키는 sessionStorage(탭 닫으면 소멸).
+      </div>
+    </div>
+  </div>
+
+  <!-- 키 계층 -->
+  <div class="band">
+    <div class="t">🔑 키 계층</div>
+    <div class="chain">
+      <span class="node">패스프레이즈<small>사람만 앎</small></span>
+      <span class="op">─PBKDF2(600k)→</span>
+      <span class="node">KEK<small>웹 메모리</small></span>
+      <span class="op">─AES-GCM→</span>
+      <span class="node">owner 개인키 (RSA-3072)<small>웹에서만 복원</small></span>
+      <span class="sep">│</span>
+      <span class="node">owner 공개키<small>비밀 아님</small></span>
+      <span class="op">─wrap→</span>
+      <span class="node">per-device DEK<small>머신마다 랜덤 AES-256</small></span>
+      <span class="op">─AES-256-GCM→</span>
+      <span class="node">payload/raw 암호문<small>row별 nonce, envelope {v,kid,n,ct}</small></span>
+    </div>
+  </div>
+
+  <!-- 제로지식 경계 + 디바이스 연속성 -->
+  <div class="grid2">
+    <div class="card">
+      <h4>🛡 제로지식 경계 <span class="pill done" style="font-size:9.5px">구현</span></h4>
+      <ul>
+        <li><span class="yes">운영자가 보는 것:</span> 암호문 payload · 공개키 · 봉인DEK · 메타데이터(누가·언제·무슨 도구·실패여부)</li>
+        <li><span class="no">운영자가 못 보는 것:</span> 패스프레이즈 · 개인키 · 평문 DEK · payload 내용</li>
+        <li><span class="cau">⚠ 한계:</span> 복호화 웹 JS를 운영자가 서빙 → <b>악의적</b> 운영자의 키 탈취는 못 막음 (= at-rest 제로지식까지가 떳떳한 주장 범위)</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>🔁 디바이스 연속성(재설치) <span class="pill done" style="font-size:9.5px">구현</span></h4>
+      <ul>
+        <li>삭제·재설치해도 <b>machine_guid</b>(Windows MachineGuid)로 같은 device 행에 <b>자동</b> 연결 — 관리자 매칭 불필요</li>
+        <li>재설치 = 새 DEK 세대 → <span class="mono">dek_keys</span>에 <b>누적</b>(덮어쓰기 X)</li>
+        <li>옛 로그(옛 kid)는 <b>옛 봉인DEK</b>로 계속 복호 — 봉인본은 DB에 남음(사라지는 건 로컬 평문뿐)</li>
+        <li><b>revoke/제거됨 guid는 차단</b>(재설치해도 안 되살림)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span class="tag">기본 E2EE: 커밋 <b>e8924e5</b> · 스키마 라이브 적용 · 컬렉터 테스트 33 통과</span>
+    <span class="tag">메타데이터(project/cwd 포함)는 v1 평문 — sessions 필터 의존</span>
+    <span class="tag">분실 주의: 패스프레이즈+복구코드 둘 다 잃으면 영구 복호 불가</span>
+  </div>
+
+</div>
+</body>
+</html>

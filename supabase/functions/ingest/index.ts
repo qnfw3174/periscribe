@@ -28,19 +28,51 @@ Deno.serve(async (req: Request) => {
   const token = (body?.device_token ?? "").toString();
   if (!token) return json({ error: "missing device_token" }, 401);
   const hash = await sha256hex(token);
+  const mguid = (body?.machine?.machine_guid ?? "").toString();
 
-  // 디바이스 조회
+  // 1) 토큰으로 발급 시 생성된 디바이스 행 조회
   const dResp = await fetch(
-    `${SUPABASE_URL}/rest/v1/devices?select=id,owner_id,revoked&token_hash=eq.${encodeURIComponent(hash)}&limit=1`,
+    `${SUPABASE_URL}/rest/v1/devices?select=id,owner_id,revoked,machine_guid,dek_keys&token_hash=eq.${encodeURIComponent(hash)}&limit=1`,
     { headers: svcHeaders() },
   );
   if (!dResp.ok) return json({ error: "device lookup failed" }, 502);
-  const rows = await dResp.json();
-  const dev = Array.isArray(rows) ? rows[0] : null;
-  if (!dev) return json({ error: "invalid token" }, 401);
+  const trows = await dResp.json();
+  const tokenDev = Array.isArray(trows) ? trows[0] : null;
+  if (!tokenDev) return json({ error: "invalid token" }, 401);
+
+  // 2) 디바이스 연속성: machine_guid로 정체성 확정. 같은 머신(guid)에 기존 행이 있으면
+  //    재설치로 보고 그 행에 토큰을 repoint하고 토큰행은 버린다 → 관리자는 1개로 이어서 관리.
+  let dev = tokenDev;
+  if (mguid) {
+    const cResp = await fetch(
+      `${SUPABASE_URL}/rest/v1/devices?select=id,owner_id,revoked,dek_keys&owner_id=eq.${tokenDev.owner_id}&machine_guid=eq.${encodeURIComponent(mguid)}&limit=1`,
+      { headers: svcHeaders() },
+    );
+    const crows = cResp.ok ? await cResp.json() : [];
+    const existing = Array.isArray(crows) ? crows[0] : null;
+    if (existing && existing.id !== tokenDev.id) {
+      // revoke된 머신은 재설치해도 되살리지 않음(의도적 차단 유지).
+      if (existing.revoked) return json({ error: "revoked token" }, 401);
+      // 갓 발급된 토큰행 삭제 후, 기존 행에 새 토큰을 연결(uninstalled 표시 해제).
+      await fetch(`${SUPABASE_URL}/rest/v1/devices?id=eq.${tokenDev.id}`,
+        { method: "DELETE", headers: svcHeaders({ Prefer: "return=minimal" }) });
+      await fetch(`${SUPABASE_URL}/rest/v1/devices?id=eq.${existing.id}`, {
+        method: "PATCH",
+        headers: svcHeaders({ "Content-Type": "application/json", Prefer: "return=minimal" }),
+        body: JSON.stringify({ token_hash: hash, uninstalled_at: null }),
+      });
+      dev = existing;
+    } else if (tokenDev.machine_guid !== mguid) {
+      // 최초 바인딩: 토큰행에 machine_guid 기록.
+      await fetch(`${SUPABASE_URL}/rest/v1/devices?id=eq.${tokenDev.id}`, {
+        method: "PATCH",
+        headers: svcHeaders({ "Content-Type": "application/json", Prefer: "return=minimal" }),
+        body: JSON.stringify({ machine_guid: mguid }),
+      });
+    }
+  }
 
   // 제거 신호: uninstaller가 데이터 삭제 전에 보냄. uninstalled_at 스탬프 + 자동 revoke.
-  // (revoked 여부와 무관하게 처리 → 그 머신만 자기 자신을 제거 표시.)
   if (body?.uninstall === true) {
     await fetch(`${SUPABASE_URL}/rest/v1/devices?id=eq.${dev.id}`, {
       method: "PATCH",
@@ -94,10 +126,15 @@ Deno.serve(async (req: Request) => {
     last_error: m.last_error ?? null,
     last_error_at: m.last_error ? new Date().toISOString() : null,
   };
-  // E2EE: 컬렉터가 보낸 봉인된 per-device DEK(owner 공개키로 wrap)를 저장. 평문 DEK는 안 받음.
-  if (typeof m.wrapped_dek === "string" && m.wrapped_dek) {
+  if (mguid) patch.machine_guid = mguid;
+  // E2EE: 봉인된 per-device DEK를 dek_keys[kid]에 "누적"(덮어쓰기 X) → 재설치로 새 세대가 생겨도
+  // 옛 세대 DEK가 남아 옛 로그 복호 유지. wrapped_dek/dek_kid는 현재 세대 포인터로 함께 갱신.
+  if (typeof m.wrapped_dek === "string" && m.wrapped_dek && m.dek_kid != null) {
+    const keys = (dev.dek_keys && typeof dev.dek_keys === "object") ? { ...dev.dek_keys } : {};
+    keys[String(m.dek_kid)] = m.wrapped_dek;
+    patch.dek_keys = keys;
     patch.wrapped_dek = m.wrapped_dek;
-    patch.dek_kid = m.dek_kid ?? 1;
+    patch.dek_kid = m.dek_kid;
   }
   await fetch(`${SUPABASE_URL}/rest/v1/devices?id=eq.${dev.id}`, {
     method: "PATCH",
