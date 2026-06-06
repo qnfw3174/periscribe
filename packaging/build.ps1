@@ -2,9 +2,9 @@
 .SYNOPSIS
   단일 periscribe.exe 빌드(PyInstaller onefile, console). 타깃 PC엔 Python 불필요.
 .NOTES
-  Collector는 표준 라이브러리만 쓰므로 추가 hidden-import가 없다.
-  결과: packaging\dist\periscribe.exe
-  사용: periscribe.exe install --token <T> --url <U>   /   periscribe.exe run
+  수집(run) 런타임은 표준 라이브러리만 쓴다. customtkinter 는 GUI 설치 창에서만 쓰이고
+  exe 에 번들된다(--collect-all). 결과: packaging\dist\periscribe.exe
+  사용: periscribe.exe (더블클릭 → GUI 설치)  /  periscribe.exe run
 .EXAMPLE
   .\build.ps1
 #>
@@ -12,9 +12,10 @@ $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $collector = Resolve-Path (Join-Path $here "..\collector")
 
-python -m pip install --quiet --upgrade pyinstaller
+python -m pip install --quiet --upgrade pyinstaller customtkinter
 python -m PyInstaller --noconfirm --onefile --windowed --name periscribe `
   --paths "$collector" `
+  --collect-all customtkinter `
   --distpath (Join-Path $here "dist") `
   --workpath (Join-Path $here "build") `
   --specpath $here `

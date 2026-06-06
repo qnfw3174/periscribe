@@ -269,7 +269,93 @@ def cmd_uninstall(argv: list[str]) -> int:
 
 # ---------------- GUI 설치(더블클릭) ----------------
 def gui_setup() -> int:
-    """창(GUI)으로 토큰을 입력받아 설치. tkinter가 없으면 콘솔(cmd_setup)로 폴백."""
+    """모던 설치 창(customtkinter). 미번들이면 기본 tk 창으로, 그것도 없으면 콘솔로 폴백."""
+    try:
+        import customtkinter as ctk
+    except Exception:
+        return _gui_setup_tk()
+
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("blue")
+    ACCENT, ACCENT_H, INK = "#6ea8fe", "#5a93e6", "#0b0d11"
+    MUTED, OKC, ERRC = "#8a93a6", "#4cd585", "#ff6b6b"
+
+    app = ctk.CTk()
+    app.title("Periscribe Collector")
+    app.resizable(False, False)
+    app.configure(fg_color="#0f1115")
+
+    card = ctk.CTkFrame(app, corner_radius=16, fg_color="#171a21")
+    card.pack(padx=18, pady=18, fill="both", expand=True)
+    pad = {"padx": 26}
+
+    ctk.CTkLabel(card, text="⌖  Periscribe Collector",
+                 font=ctk.CTkFont(size=19, weight="bold")).pack(anchor="w", pady=(22, 2), **pad)
+    ctk.CTkLabel(card, text="에이전트 활동을 기록합니다", text_color=MUTED,
+                 font=ctk.CTkFont(size=12)).pack(anchor="w", pady=(0, 16), **pad)
+
+    ctk.CTkLabel(card, text="디바이스 토큰", text_color=MUTED,
+                 font=ctk.CTkFont(size=12)).pack(anchor="w", **pad)
+    token_var = ctk.StringVar()
+    token_entry = ctk.CTkEntry(card, textvariable=token_var, width=360, height=38,
+                               corner_radius=8, placeholder_text="웹 [머신 관리]에서 발급한 pscb_…")
+    token_entry.pack(pady=(4, 12), **pad)
+    token_entry.focus_set()
+
+    ctk.CTkLabel(card, text="머신 이름 (선택)", text_color=MUTED,
+                 font=ctk.CTkFont(size=12)).pack(anchor="w", **pad)
+    name_var = ctk.StringVar()
+    ctk.CTkEntry(card, textvariable=name_var, width=360, height=38, corner_radius=8,
+                 placeholder_text=socket.gethostname()).pack(pady=(4, 6), **pad)
+
+    status = ctk.CTkLabel(card, text="", text_color=ERRC, font=ctk.CTkFont(size=12),
+                          wraplength=360, justify="left")
+    status.pack(anchor="w", pady=(4, 0), **pad)
+    if _is_installed():
+        status.configure(text="이미 설치돼 있습니다. 새 토큰으로 다시 설치할 수 있습니다.", text_color=MUTED)
+
+    def do_install() -> None:
+        token = token_var.get().strip()
+        if not token:
+            status.configure(text="디바이스 토큰을 입력하세요.", text_color=ERRC)
+            return
+        name = name_var.get().strip()
+        btn.configure(state="disabled", text="설치 중…")
+        status.configure(text="", text_color=MUTED)
+        app.update()
+        try:
+            args = ["--token", token] + (["--name", name] if name else [])
+            rc = cmd_install(args)
+        except Exception as e:
+            rc = 1
+            status.configure(text=f"오류: {e}", text_color=ERRC)
+        if rc == 0:
+            status.configure(text="✓ 설치 완료! 백그라운드에서 실행 중입니다. 잠시 후 웹에 표시됩니다.",
+                             text_color=OKC)
+            btn.configure(text="완료", fg_color=OKC, hover_color=OKC, command=app.destroy, state="normal")
+            app.after(2800, app.destroy)
+        else:
+            if not status.cget("text"):
+                status.configure(text=f"설치 실패 (코드 {rc}).", text_color=ERRC)
+            btn.configure(state="normal", text="설치")
+
+    btn = ctk.CTkButton(card, text="설치", height=42, corner_radius=10, command=do_install,
+                        font=ctk.CTkFont(size=14, weight="bold"),
+                        fg_color=ACCENT, hover_color=ACCENT_H, text_color=INK)
+    btn.pack(fill="x", pady=(14, 22), **pad)
+    app.bind("<Return>", lambda _e: do_install())
+
+    app.update_idletasks()
+    w, h = app.winfo_width(), app.winfo_height()
+    x = (app.winfo_screenwidth() - w) // 2
+    y = (app.winfo_screenheight() - h) // 3
+    app.geometry(f"+{x}+{y}")
+    app.mainloop()
+    return 0
+
+
+def _gui_setup_tk() -> int:
+    """기본 tkinter 폴백 창(customtkinter 미번들 시)."""
     try:
         import tkinter as tk
         from tkinter import messagebox
