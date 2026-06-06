@@ -7,6 +7,8 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <!-- 상단 고정 영역: 스크롤해도 topbar+헬스바+필터가 항상 보이게 한 덩어리로 고정 -->
+  <div class="topstack">
   <header class="topbar">
     <div class="brand">
       <span class="logo">⌖</span> Periscribe
@@ -107,6 +109,7 @@
     <button id="reload" class="btn">다시 로드</button>
     <span id="count" class="count"></span>
   </section>
+  </div><!-- /topstack -->
 
   <div class="loadmore-bar needs-auth">
     <button id="load-more" class="btn ghost" style="display:none">↑ 더 불러오기 (과거)</button>

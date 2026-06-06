@@ -16,10 +16,12 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); }
 
+/* 상단 영역(topbar+헬스바+필터)을 한 덩어리로 고정. 로그를 스크롤해도 머신 관리·필터가 항상 보인다. */
+.topstack { position: sticky; top: 0; z-index: 10; }
+
 .topbar {
   display: flex; justify-content: space-between; align-items: center;
   padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; z-index: 10;
 }
 .brand { font-weight: 600; font-size: 16px; }
 .brand .logo { color: var(--accent); margin-right: 4px; }
@@ -33,7 +35,6 @@ body { margin: 0; background: var(--bg); color: var(--text); }
 .filters {
   display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
   padding: 10px 16px; background: var(--panel-2); border-bottom: 1px solid var(--border);
-  position: sticky; top: 49px; z-index: 9;
 }
 .filters label { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
 .filters label.chk { flex-direction: row; align-items: center; gap: 5px; }
