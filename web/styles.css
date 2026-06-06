@@ -64,8 +64,16 @@ body.authed #login-gate { display: none; }
 
 .login-gate {
   position: fixed; inset: 0; z-index: 100; display: flex;
+  flex-direction: column; gap: 16px;
   align-items: center; justify-content: center; background: var(--bg);
 }
+.dl-link {
+  color: var(--accent); text-decoration: none; font-size: 13px; font-weight: 600;
+  border: 1px solid var(--border); border-radius: 8px; padding: 9px 14px; background: var(--panel);
+}
+.dl-link:hover { background: var(--panel-2); }
+.dl-note { color: var(--muted); font-size: 12px; margin-top: -8px; }
+.dl-note b { color: var(--text); }
 .login-card {
   display: flex; flex-direction: column; gap: 10px; width: 300px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 28px 24px;
