@@ -74,6 +74,8 @@ body.authed #login-gate { display: none; }
 .dl-link:hover { background: var(--panel-2); }
 .dl-note { color: var(--muted); font-size: 12px; margin-top: -8px; }
 .dl-note b { color: var(--text); }
+.dl-uninstall { color: var(--muted); font-size: 12px; text-decoration: underline; margin-top: -4px; }
+.dl-uninstall:hover { color: var(--text); }
 .login-card {
   display: flex; flex-direction: column; gap: 10px; width: 300px;
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 28px 24px;
