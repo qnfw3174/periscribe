@@ -30,7 +30,18 @@
       <input id="login-email" type="email" placeholder="이메일" autocomplete="username" required />
       <input id="login-password" type="password" placeholder="비밀번호" autocomplete="current-password" required />
       <button id="login-btn" type="submit" class="btn">로그인</button>
+      <button id="forgot-btn" type="button" class="link-btn">비밀번호 재설정 메일 보내기</button>
       <div id="login-error" class="login-error"></div>
+      <div id="login-info" class="login-info"></div>
+    </form>
+
+    <!-- 비번 재설정 메일 링크로 돌아오면(=recovery 세션) 이 폼이 대신 보인다. -->
+    <form id="recovery-form" class="login-card" style="display:none" autocomplete="on">
+      <div class="login-title"><span class="logo">⌖</span> 새 비밀번호 설정</div>
+      <div class="login-sub">메일 링크로 들어오셨습니다. 새 비밀번호를 입력하세요.</div>
+      <input id="new-password" type="password" placeholder="새 비밀번호 (6자 이상)" autocomplete="new-password" minlength="6" required />
+      <button id="recovery-btn" type="submit" class="btn">비밀번호 변경</button>
+      <div id="recovery-error" class="login-error"></div>
     </form>
   </div>
 

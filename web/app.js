@@ -602,6 +602,7 @@
 
   // ---------- 인증 게이트 ----------
   let appStarted = false;
+  let inRecovery = false;  // 비번 재설정 링크로 들어온 동안엔 앱을 시작하지 않고 새 비번 폼을 보인다.
   function initApp() {
     if (appStarted) return;
     appStarted = true;
@@ -623,6 +624,14 @@
     const ub = document.getElementById("user-box");
     if (ub) ub.style.display = "none";
   }
+  // 새 비번 입력 폼으로 전환(로그인 폼 대신). body는 비인증 상태로 둬서 게이트가 보이게 한다.
+  function showRecovery() {
+    document.body.classList.remove("authed");
+    const lf = document.getElementById("login-form");
+    const rf = document.getElementById("recovery-form");
+    if (lf) lf.style.display = "none";
+    if (rf) rf.style.display = "";
+  }
 
   const loginForm = document.getElementById("login-form");
   const loginError = document.getElementById("login-error");
@@ -643,11 +652,50 @@
     location.reload();
   });
 
+  // 비밀번호 재설정 메일 발송. Supabase가 메일·토큰·검증을 처리하고, 링크는 redirectTo(이 앱)로 돌아온다.
+  const forgotBtn = document.getElementById("forgot-btn");
+  const loginInfo = document.getElementById("login-info");
+  if (forgotBtn) forgotBtn.addEventListener("click", async () => {
+    loginError.textContent = "";
+    if (loginInfo) loginInfo.textContent = "";
+    const email = document.getElementById("login-email").value.trim();
+    if (!email) { loginError.textContent = "먼저 이메일을 입력하세요."; return; }
+    forgotBtn.disabled = true;
+    const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: location.origin });
+    forgotBtn.disabled = false;
+    if (error) loginError.textContent = "메일 발송 실패: " + error.message;
+    else if (loginInfo) loginInfo.textContent = email + " 로 재설정 메일을 보냈습니다. 메일의 링크를 누르면 이 페이지로 돌아옵니다.";
+  });
+
+  // recovery 세션 상태에서 새 비번 확정. updateUser 가 앱이 채워야 할 마지막 한 조각.
+  const recoveryForm = document.getElementById("recovery-form");
+  const recoveryError = document.getElementById("recovery-error");
+  if (recoveryForm) recoveryForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    recoveryError.textContent = "";
+    const pw = document.getElementById("new-password").value;
+    const btn = document.getElementById("recovery-btn");
+    btn.disabled = true; btn.textContent = "변경 중…";
+    const { error } = await client.auth.updateUser({ password: pw });
+    btn.disabled = false; btn.textContent = "비밀번호 변경";
+    if (error) { recoveryError.textContent = "변경 실패: " + error.message; return; }
+    inRecovery = false;
+    history.replaceState(null, "", location.pathname);  // URL 의 recovery 토큰 해시 제거
+    location.reload();                                   // 정상 세션으로 앱 재시작
+  });
+
   // ---------- 시작 ----------
+  // 비번 재설정 링크로 들어오면 URL 해시에 type=recovery 가 실려 온다(SDK가 곧 해시를 정리하므로 동기적으로 먼저 확인).
+  const _hp = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+  if (_hp.get("type") === "recovery") { inRecovery = true; showRecovery(); }
+
   client.auth.getSession().then(({ data: { session } }) => {
+    if (inRecovery) return;                 // recovery 중엔 앱 시작 보류(새 비번 폼만 노출)
     if (session) showAuthed(session); else showLogin();
   });
-  client.auth.onAuthStateChange((_event, session) => {
+  client.auth.onAuthStateChange((event, session) => {
+    if (event === "PASSWORD_RECOVERY") { inRecovery = true; showRecovery(); return; }
+    if (inRecovery) return;
     if (session) showAuthed(session); else showLogin();
   });
 })();

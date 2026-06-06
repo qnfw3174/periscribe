@@ -78,6 +78,12 @@ body.authed #login-gate { display: none; }
 }
 .login-card .btn { margin-top: 4px; padding: 9px; }
 .login-error { color: var(--error); font-size: 12px; min-height: 14px; }
+.login-info { color: var(--muted); font-size: 12px; min-height: 14px; }
+.link-btn {
+  background: none; border: none; color: var(--muted); font-size: 12px;
+  text-decoration: underline; cursor: pointer; padding: 2px; align-self: flex-start;
+}
+.link-btn:hover { color: var(--fg, #ddd); }
 
 /* ---- 머신 헬스 바 ---- */
 .health-bar {
