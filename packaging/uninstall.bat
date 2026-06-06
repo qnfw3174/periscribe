@@ -1,25 +1,18 @@
 @echo off
-chcp 65001 >nul
-setlocal
 echo ============================================
-echo   Periscribe Collector ì œê±°
+echo   Periscribe Collector Á¦°Å
 echo ============================================
 echo.
-
-echo [1/3] ìžë™ ì‹œìž‘ í•´ì œ...
+echo [1/3] ÀÚµ¿ ½ÃÀÛ ÇØÁ¦...
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v PeriscribeCollector /f >nul 2>&1
 schtasks /Delete /TN PeriscribeCollector /F >nul 2>&1
-
-echo [2/3] ì‹¤í–‰ ì¤‘ì¸ ìˆ˜ì§‘ê¸° ì¢…ë£Œ...
+echo [2/3] ½ÇÇà ÁßÀÎ ¼öÁý±â Á¾·á...
 taskkill /IM periscribe.exe /F >nul 2>&1
-
-echo [3/3] ë°ì´í„°(í† í°/ì²´í¬í¬ì¸íŠ¸/ë¡œê·¸) ì‚­ì œ...
+echo [3/3] µ¥ÀÌÅÍ(ÅäÅ«/Ã¼Å©Æ÷ÀÎÆ®/·Î±×) »èÁ¦...
 rmdir /S /Q "%LOCALAPPDATA%\Periscribe" >nul 2>&1
-
 echo.
-echo âœ“ ì œê±° ì™„ë£Œ.
-echo   - ë‹¤ìš´ë¡œë“œí•œ periscribe.exe íŒŒì¼ì€ ì§ì ‘ ì‚­ì œí•˜ì„¸ìš”.
-echo   - ê´€ë¦¬ìž: ì›¹ [ë¨¸ì‹  ê´€ë¦¬]ì—ì„œ ì´ ë¨¸ì‹ ì„ revoke í•˜ëŠ” ê²ƒë„ ê¶Œìž¥í•©ë‹ˆë‹¤.
+echo Á¦°Å ¿Ï·á.
+echo  - ´Ù¿î·ÎµåÇÑ periscribe.exe ÆÄÀÏÀº Á÷Á¢ »èÁ¦ÇÏ¼¼¿ä.
+echo  - °ü¸®ÀÚ: À¥ [¸Ó½Å °ü¸®]¿¡¼­ ÀÌ ¸Ó½ÅÀ» revoke ÇÏ´Â °Íµµ ±ÇÀåÇÕ´Ï´Ù.
 echo.
 pause
-endlocal
