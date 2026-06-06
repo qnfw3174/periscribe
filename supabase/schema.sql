@@ -106,6 +106,22 @@ drop policy if exists devices_delete on public.devices;
 create policy devices_delete on public.devices
   for delete to authenticated using (owner_id = auth.uid());
 
+-- 디바이스 "완전 삭제": 디바이스 행 + 그 머신의 events 까지 제거. events엔 authenticated용
+-- delete RLS가 없으므로(읽기 전용) security definer 함수로 소유 검증 후 함께 지운다.
+-- (backfill_requests는 device_id FK on delete cascade로 자동 정리)
+create or replace function public.purge_device(p_device uuid)
+returns void language plpgsql security definer
+set search_path = public as $$
+begin
+  if not exists (select 1 from public.devices where id = p_device and owner_id = auth.uid()) then
+    raise exception 'device not found or not owner';
+  end if;
+  delete from public.events  where device_id = p_device and owner_id = auth.uid();
+  delete from public.devices where id = p_device and owner_id = auth.uid();
+end $$;
+revoke all on function public.purge_device(uuid) from anon, public;
+grant execute on function public.purge_device(uuid) to authenticated;
+
 -- =====================================================================
 -- 2b. backfill_requests — 웹에서 "이 세션 과거 전체 불러오기" 요청.
 --    Edge Function(ingest)이 하트비트 응답으로 디바이스에 전달 → 컬렉터가 로컬 파일을

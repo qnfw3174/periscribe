@@ -800,11 +800,13 @@
     if (rev) { await client.from("devices").update({ revoked: true }).eq("id", rev); loadDevices(); return; }
     const del = t.getAttribute("data-delete");
     if (del) {
-      if (!confirm("이 머신을 목록에서 완전히 삭제할까요? (수집된 기록은 보존됩니다)")) return;
-      const { error } = await client.from("devices").delete().eq("id", del);
+      if (!confirm("이 머신과 수집된 로그를 모두 영구 삭제합니다. 되돌릴 수 없습니다. 계속할까요?")) return;
+      // 디바이스 행 + 그 머신의 events 까지 함께 삭제(소유 검증 내장 RPC).
+      const { error } = await client.rpc("purge_device", { p_device: del });
       if (error) { alert("삭제 실패: " + error.message); return; }
       deviceMap.delete(del);
       loadDevices();
+      loadHistory();   // 삭제된 머신의 로그를 피드에서도 즉시 반영
     }
   });
 
