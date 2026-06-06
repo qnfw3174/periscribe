@@ -90,6 +90,9 @@ do $$ begin
     alter publication supabase_realtime add table public.devices;
   end if;
 end $$;
+-- DELETE/UPDATE Realtime 이벤트가 owner_id를 포함해 RLS를 통과하도록(기본=PK만이면 삭제 이벤트가
+-- RLS 평가 불가로 누락 → 웹에 유령 디바이스가 남음). full로 전체 컬럼을 old 레코드에 싣는다.
+alter table public.devices replica identity full;
 
 -- RLS: 관리자가 자기 디바이스만 조회/생성/수정(revoke). 함수의 service_role은 RLS 우회.
 alter table public.devices enable row level security;

@@ -780,7 +780,10 @@
 
   const devModal = document.getElementById("devices-modal");
   const manageBtn = document.getElementById("manage-devices");
-  if (manageBtn) manageBtn.addEventListener("click", () => { renderDeviceList(); if (devModal) devModal.style.display = "flex"; });
+  if (manageBtn) manageBtn.addEventListener("click", () => {
+    if (devModal) devModal.style.display = "flex";
+    loadDevices();   // 열 때마다 DB에서 새로 동기화(유령 항목 방지)
+  });
   const devClose = document.getElementById("devices-close");
   if (devClose) devClose.addEventListener("click", () => {
     if (devModal) devModal.style.display = "none";
