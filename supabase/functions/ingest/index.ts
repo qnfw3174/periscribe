@@ -37,7 +37,20 @@ Deno.serve(async (req: Request) => {
   if (!dResp.ok) return json({ error: "device lookup failed" }, 502);
   const rows = await dResp.json();
   const dev = Array.isArray(rows) ? rows[0] : null;
-  if (!dev || dev.revoked) return json({ error: "invalid or revoked token" }, 401);
+  if (!dev) return json({ error: "invalid token" }, 401);
+
+  // 제거 신호: uninstaller가 데이터 삭제 전에 보냄. uninstalled_at 스탬프 + 자동 revoke.
+  // (revoked 여부와 무관하게 처리 → 그 머신만 자기 자신을 제거 표시.)
+  if (body?.uninstall === true) {
+    await fetch(`${SUPABASE_URL}/rest/v1/devices?id=eq.${dev.id}`, {
+      method: "PATCH",
+      headers: svcHeaders({ "Content-Type": "application/json", Prefer: "return=minimal" }),
+      body: JSON.stringify({ uninstalled_at: new Date().toISOString(), revoked: true }),
+    });
+    return json({ ok: true, uninstalled: true });
+  }
+
+  if (dev.revoked) return json({ error: "revoked token" }, 401);
 
   // events 적재 (owner_id/device_id 스탬프). 멱등 upsert(중복 무시).
   const events = Array.isArray(body?.events) ? body.events : [];

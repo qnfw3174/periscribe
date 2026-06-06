@@ -61,7 +61,8 @@ create table if not exists public.devices (
   collector_version text,
   created_at        timestamptz not null default now(),
   last_seen         timestamptz,                           -- ingest 호출 때마다 함수가 갱신(하트비트)
-  revoked           boolean not null default false
+  revoked           boolean not null default false,
+  uninstalled_at    timestamptz                            -- uninstaller가 신호 보내면 스탬프(+자동 revoke)
 );
 create index if not exists devices_owner_idx on public.devices(owner_id);
 
@@ -82,6 +83,9 @@ create policy devices_insert on public.devices
 drop policy if exists devices_update on public.devices;
 create policy devices_update on public.devices
   for update to authenticated using (owner_id = auth.uid()) with check (owner_id = auth.uid());
+drop policy if exists devices_delete on public.devices;
+create policy devices_delete on public.devices
+  for delete to authenticated using (owner_id = auth.uid());
 
 -- =====================================================================
 -- 2b. backfill_requests — 웹에서 "이 세션 과거 전체 불러오기" 요청.

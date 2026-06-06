@@ -591,14 +591,18 @@
     const list = Array.from(deviceMap.values()).sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     if (list.length === 0) { el.innerHTML = '<div class="health-empty">아직 등록된 머신이 없습니다.</div>'; return; }
     el.innerHTML = list.map((d) => {
-      const status = d.revoked ? '<span class="dev-revoked">revoked</span>'
+      const status = d.uninstalled_at ? '<span class="dev-revoked">🗑 제거됨</span>'
+        : d.revoked ? '<span class="dev-revoked">revoked</span>'
         : isOnline(d) ? '<span class="dev-online">● 온라인</span>'
         : `<span class="dev-stale">● ${d.last_seen ? relTime(d.last_seen) : "대기"}</span>`;
-      const rev = d.revoked ? "" : `<button class="btn ghost btn-sm" data-revoke="${d.id}">revoke</button>`;
+      // 활성 머신: revoke / 비활성(revoked·제거됨): 목록에서 완전 삭제
+      const action = (d.revoked || d.uninstalled_at)
+        ? `<button class="btn ghost btn-sm" data-delete="${d.id}">삭제</button>`
+        : `<button class="btn ghost btn-sm" data-revoke="${d.id}">revoke</button>`;
       return `<div class="device-row">
         <div class="dev-main"><b>${esc(deviceLabel(d))}</b>
           <span class="dev-meta">${esc(d.machine_id || "미연결")} · ${esc(d.platform || "")}</span></div>
-        <div class="dev-status">${status}</div>${rev}</div>`;
+        <div class="dev-status">${status}</div>${action}</div>`;
     }).join("");
   }
   async function addDevice(name) {
@@ -636,8 +640,18 @@
   });
   const devListEl = document.getElementById("devices-list");
   if (devListEl) devListEl.addEventListener("click", async (e) => {
-    const id = e.target && e.target.getAttribute && e.target.getAttribute("data-revoke");
-    if (id) { await client.from("devices").update({ revoked: true }).eq("id", id); loadDevices(); }
+    const t = e.target;
+    if (!t || !t.getAttribute) return;
+    const rev = t.getAttribute("data-revoke");
+    if (rev) { await client.from("devices").update({ revoked: true }).eq("id", rev); loadDevices(); return; }
+    const del = t.getAttribute("data-delete");
+    if (del) {
+      if (!confirm("이 머신을 목록에서 완전히 삭제할까요? (수집된 기록은 보존됩니다)")) return;
+      const { error } = await client.from("devices").delete().eq("id", del);
+      if (error) { alert("삭제 실패: " + error.message); return; }
+      deviceMap.delete(del);
+      loadDevices();
+    }
   });
 
   // ---------- 인증 게이트 ----------
