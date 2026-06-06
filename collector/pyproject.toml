@@ -9,8 +9,9 @@ description = "Read-only Claude Code transcript collector that ingests into Supa
 readme = "../README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
-# 수집(run) 런타임 의존성 없음 — 표준 라이브러리만 사용.
-dependencies = []
+# E2EE(payload 암호화)에 AES-GCM·RSA-OAEP가 필요해 cryptography 1개만 추가.
+# 그 외 수집 로직은 표준 라이브러리만 사용.
+dependencies = ["cryptography>=41"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]

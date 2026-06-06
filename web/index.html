@@ -79,6 +79,52 @@
     </div>
   </div>
 
+  <!-- E2EE 암호화 게이트: 로그인 후 키 셋업/잠금해제. 운영자도 못 읽는 종단간 암호화. -->
+  <div id="enc-modal" class="modal" style="display:none">
+    <div class="modal-card">
+      <!-- 최초: 패스프레이즈 설정(키 생성) -->
+      <form id="enc-setup" class="enc-form" style="display:none">
+        <div class="modal-head"><span>🔐 암호화 설정 (최초 1회)</span></div>
+        <p class="enc-note">로그 내용을 종단간 암호화합니다. <b>운영자도 복호화할 수 없습니다.</b>
+          이 패스프레이즈는 서버로 전송되지 않으며, <b>분실 시 복구코드로만</b> 복구됩니다.</p>
+        <input id="enc-pp1" type="password" placeholder="암호화 패스프레이즈 (8자 이상)" autocomplete="new-password" minlength="8" required />
+        <input id="enc-pp2" type="password" placeholder="패스프레이즈 확인" autocomplete="new-password" minlength="8" required />
+        <button class="btn" type="submit">키 생성</button>
+        <div id="enc-setup-err" class="login-error"></div>
+      </form>
+
+      <!-- 설정 후: 복구코드 1회 표시 -->
+      <div id="enc-recovery-show" class="enc-form" style="display:none">
+        <div class="modal-head"><span>🗝 복구코드 (지금 한 번만 표시)</span></div>
+        <p class="enc-note">패스프레이즈를 잊으면 <b>이 코드로만</b> 복구할 수 있습니다. 안전한 곳에 보관하세요.</p>
+        <pre id="enc-recovery-code" class="token-box"></pre>
+        <label class="chk"><input id="enc-recovery-ack" type="checkbox" /> 복구코드를 안전하게 저장했습니다</label>
+        <button id="enc-recovery-done" class="btn" type="button" disabled>계속</button>
+      </div>
+
+      <!-- 재방문: 잠금 해제 -->
+      <form id="enc-unlock" class="enc-form" style="display:none">
+        <div class="modal-head"><span>🔓 암호화 잠금 해제</span></div>
+        <p class="enc-note">로그를 복호화하려면 암호화 패스프레이즈를 입력하세요.</p>
+        <input id="enc-unlock-pp" type="password" placeholder="암호화 패스프레이즈" autocomplete="off" required />
+        <button class="btn" type="submit">잠금 해제</button>
+        <button id="enc-use-recovery" type="button" class="link-btn">패스프레이즈 분실? 복구코드 사용</button>
+        <div id="enc-unlock-err" class="login-error"></div>
+      </form>
+
+      <!-- 복구: 복구코드로 풀고 새 패스프레이즈 설정 -->
+      <form id="enc-recover" class="enc-form" style="display:none">
+        <div class="modal-head"><span>🗝 복구코드로 잠금 해제</span></div>
+        <input id="enc-recover-code" type="text" placeholder="복구코드" autocomplete="off" required />
+        <input id="enc-recover-pp1" type="password" placeholder="새 패스프레이즈 (8자 이상)" autocomplete="new-password" minlength="8" required />
+        <input id="enc-recover-pp2" type="password" placeholder="새 패스프레이즈 확인" autocomplete="new-password" minlength="8" required />
+        <button class="btn" type="submit">복구 + 패스프레이즈 재설정</button>
+        <button id="enc-recover-back" type="button" class="link-btn">← 돌아가기</button>
+        <div id="enc-recover-err" class="login-error"></div>
+      </form>
+    </div>
+  </div>
+
   <section class="filters needs-auth">
     <label>머신
       <select id="f-machine"><option value="">전체</option></select>

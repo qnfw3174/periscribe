@@ -50,12 +50,21 @@ class Config:
     store_thinking: bool = False     # thinking 블록 저장 여부(기본 무시)
     redact: bool = False             # 수집 단계 민감정보 마스킹(토큰/키/비번 패턴)
 
+    # E2EE(payload 암호화). encrypt=true면 owner 공개키를 받아 per-device DEK를 만들어
+    # payload/raw 를 암호화 적재한다. dek는 부트스트랩 후 자동 기록(수동 입력 X). crypto.py 참고.
+    encrypt: bool = True             # 암호화 적재 사용(공개키 받기 전엔 적재 보류)
+    dek: str = ""                    # per-device DEK(base64). 비면 공개키 수신 후 자동 생성
+    dek_kid: int = 1                 # 사용한 owner 공개키 세대
+
     # 헬스(하트비트) — 유휴 시 빈 ingest 호출로 last_seen 유지. 0이면 비활성.
     heartbeat_interval: float = 30.0
     # 파일 로그(서비스/무콘솔 모드 진단용). 비우면 stderr만. 크기 기반 로테이션.
     log_file: str = ""
     log_max_bytes: int = 5_000_000   # 로테이션 임계(파일당)
     log_backups: int = 3
+
+    # 로드한 config.json 경로(DEK 부트스트랩 후 되쓰기용). 직렬화 대상 아님.
+    source_path: str = ""
 
     # ---- 로드 ----
     @classmethod
@@ -67,6 +76,7 @@ class Config:
             data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
 
         cfg = cls()
+        cfg.source_path = str(cfg_path)
         for key in vars(cfg):
             if key not in data:
                 continue
@@ -99,6 +109,22 @@ class Config:
                 "필수 설정 누락: " + ", ".join(missing)
                 + " (config.json 또는 PERISCRIBE_* 환경변수로 지정)"
             )
+
+    def persist_dek(self, dek_b64: str, kid: int) -> None:
+        """부트스트랩으로 생성한 per-device DEK를 config.json에 되쓴다(재시작 시 재사용).
+        파일이 없거나 쓰기 실패해도 메모리값(self.dek)은 유효하므로 조용히 넘어간다."""
+        self.dek = dek_b64
+        self.dek_kid = kid
+        p = Path(self.source_path) if self.source_path else None
+        if not p or not p.is_file():
+            return
+        try:
+            data = json.loads(p.read_text(encoding="utf-8-sig"))
+            data["dek"] = dek_b64
+            data["dek_kid"] = kid
+            p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
 
 
 def _coerce(value: str, to_type: type) -> Any:

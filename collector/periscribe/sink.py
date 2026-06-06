@@ -11,7 +11,9 @@ import json
 import platform
 import urllib.error
 import urllib.request
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
+
+from . import crypto
 
 
 class Sink(Protocol):
@@ -39,11 +41,16 @@ class IngestSink:
     """Edge Function(ingest)로 디바이스 토큰 인증하여 적재. service_role 불필요."""
 
     def __init__(self, ingest_url: str, device_token: str, machine_id: str = "",
-                 collector_version: str = "", timeout: float = 30.0) -> None:
+                 collector_version: str = "", timeout: float = 30.0,
+                 dek: Optional[bytes] = None, dek_kid: int = 1) -> None:
         self.url = ingest_url
         self.token = device_token
         self.timeout = timeout
         self.last_drop = ""   # 최근 poison(불량 행) 스킵 메시지(관측용)
+        # E2EE 상태: per-device DEK(평문, 메모리)와 owner 공개키(부트스트랩 후 수신).
+        self._dek = dek
+        self._dek_kid = dek_kid
+        self._pubkey = ""     # owner 공개키(SPKI base64). 하트비트로 수신.
         self.machine = {
             # devices.machine_id 가 events.machine_id(설정값)와 일치하도록 동일 값 사용.
             "hostname": machine_id or platform.node(),
@@ -53,6 +60,29 @@ class IngestSink:
             "last_error": None,
         }
 
+    # ---- E2EE ----
+    def has_dek(self) -> bool:
+        return self._dek is not None
+
+    def set_public_key(self, public_key_spki_b64: str, kid: int = 1) -> None:
+        """하트비트로 받은 owner 공개키 등록. DEK가 있으면 봉인본을 하트비트에 싣는다."""
+        if public_key_spki_b64 and public_key_spki_b64 != self._pubkey:
+            self._pubkey = public_key_spki_b64
+            self._dek_kid = kid
+            self._refresh_wrapped()
+
+    def set_dek(self, dek: bytes, kid: int = 1) -> None:
+        self._dek = dek
+        self._dek_kid = kid
+        self._refresh_wrapped()
+
+    def _refresh_wrapped(self) -> None:
+        """DEK+공개키가 모두 있으면 wrapped_dek를 머신 하트비트에 실어 서버에 저장시킨다.
+        매 하트비트에 동봉되어 서버가 항상 최신 봉인본을 갖도록 자가치유(idempotent PATCH)."""
+        if self._dek is not None and self._pubkey:
+            self.machine["wrapped_dek"] = crypto.wrap_dek_rsa(self._pubkey, self._dek)
+            self.machine["dek_kid"] = self._dek_kid
+
     def set_last_error(self, msg: str) -> None:
         """하트비트에 실어 보낼 최근 오류(없으면 None)."""
         self.machine["last_error"] = msg or None
@@ -60,9 +90,22 @@ class IngestSink:
     def emit(self, events: list[dict[str, Any]]) -> dict[str, Any]:
         if not events:
             return {}
+        # E2EE: DEK가 있으면 payload/raw 를 암호화(envelope)하고 enc_version=1 스탬프.
+        if self._dek is not None:
+            events = [self._encrypt_event(e) for e in events]
         # 키 정규화(PGRST102 방지) + NUL 제거(22P05 방지)는 함수가 아니라 여기서.
         rows = _strip_nul(_normalize_rows(events))
         return self._emit_rows(rows)
+
+    def _encrypt_event(self, ev: dict[str, Any]) -> dict[str, Any]:
+        """payload/raw 만 AES-256-GCM 으로 암호화. 메타데이터는 평문 유지(필터·인덱스용)."""
+        out = dict(ev)
+        if "payload" in out:
+            out["payload"] = crypto.encrypt_field(self._dek, out["payload"], self._dek_kid)
+        if out.get("raw") is not None:
+            out["raw"] = crypto.encrypt_field(self._dek, out["raw"], self._dek_kid)
+        out["enc_version"] = 1
+        return out
 
     def _emit_rows(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
         """적재. 서버가 4xx로 거부(SinkDataError)하면 이분탐색으로 불량 행만 스킵."""

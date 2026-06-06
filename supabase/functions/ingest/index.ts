@@ -52,6 +52,21 @@ Deno.serve(async (req: Request) => {
 
   if (dev.revoked) return json({ error: "revoked token" }, 401);
 
+  // E2EE: owner 공개키 조회(비밀 아님). 컬렉터가 이걸로 per-device DEK를 봉인한다.
+  // 관리자가 아직 웹에서 키를 설정하지 않았으면 null → 컬렉터는 적재를 보류(평문 전송 안 함).
+  let enc: { public_key: string; kid: number } | null = null;
+  {
+    const kResp = await fetch(
+      `${SUPABASE_URL}/rest/v1/owner_keys?select=public_key,kid&owner_id=eq.${dev.owner_id}&limit=1`,
+      { headers: svcHeaders() },
+    );
+    if (kResp.ok) {
+      const krows = await kResp.json();
+      const k = Array.isArray(krows) ? krows[0] : null;
+      if (k && k.public_key) enc = { public_key: k.public_key, kid: k.kid ?? 1 };
+    }
+  }
+
   // events 적재 (owner_id/device_id 스탬프). 멱등 upsert(중복 무시).
   const events = Array.isArray(body?.events) ? body.events : [];
   if (events.length > 0) {
@@ -71,17 +86,23 @@ Deno.serve(async (req: Request) => {
 
   // 하트비트: devices 갱신
   const m = body?.machine ?? {};
+  const patch: Record<string, unknown> = {
+    last_seen: new Date().toISOString(),
+    machine_id: m.hostname ?? null,
+    platform: m.platform ?? null,
+    collector_version: m.version ?? null,
+    last_error: m.last_error ?? null,
+    last_error_at: m.last_error ? new Date().toISOString() : null,
+  };
+  // E2EE: 컬렉터가 보낸 봉인된 per-device DEK(owner 공개키로 wrap)를 저장. 평문 DEK는 안 받음.
+  if (typeof m.wrapped_dek === "string" && m.wrapped_dek) {
+    patch.wrapped_dek = m.wrapped_dek;
+    patch.dek_kid = m.dek_kid ?? 1;
+  }
   await fetch(`${SUPABASE_URL}/rest/v1/devices?id=eq.${dev.id}`, {
     method: "PATCH",
     headers: svcHeaders({ "Content-Type": "application/json", Prefer: "return=minimal" }),
-    body: JSON.stringify({
-      last_seen: new Date().toISOString(),
-      machine_id: m.hostname ?? null,
-      platform: m.platform ?? null,
-      collector_version: m.version ?? null,
-      last_error: m.last_error ?? null,
-      last_error_at: m.last_error ? new Date().toISOString() : null,
-    }),
+    body: JSON.stringify(patch),
   });
 
   // 백필 요청 픽업: 이 디바이스의 pending 요청을 가져와 done 처리하고 session_id 목록을 반환.
@@ -106,5 +127,5 @@ Deno.serve(async (req: Request) => {
     }
   } catch (_) { /* 백필 픽업 실패는 적재 성공을 막지 않음 */ }
 
-  return json({ ok: true, inserted: events.length, backfill });
+  return json({ ok: true, inserted: events.length, backfill, enc });
 });

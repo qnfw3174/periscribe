@@ -26,7 +26,8 @@ create table if not exists public.events (
   project         text,
   cwd             text,
   container_id    text,                                    -- 컨테이너(샌드박스) 세션 태깅. native는 null
-  payload         jsonb not null default '{}'::jsonb,
+  enc_version     int  not null default 0,                  -- 0=평문(레거시), 1=E2EE(payload/raw가 envelope 암호문)
+  payload         jsonb not null default '{}'::jsonb,       -- enc_version=1이면 {v,kid,n,ct} envelope
   raw             jsonb
 );
 
@@ -64,9 +65,17 @@ create table if not exists public.devices (
   revoked           boolean not null default false,
   uninstalled_at    timestamptz,                           -- uninstaller가 신호 보내면 스탬프(+자동 revoke)
   last_error        text,                                  -- 컬렉터가 하트비트로 보고하는 최근 오류(관측)
-  last_error_at     timestamptz
+  last_error_at     timestamptz,
+  -- E2EE: 이 디바이스의 per-device DEK를 owner 공개키로 봉인(RSA-OAEP)한 값(base64).
+  -- 컬렉터가 로컬 생성한 DEK를 공개키로 wrap해 하트비트로 보내면 함수가 여기 저장.
+  -- 평문 DEK·패스프레이즈·개인키는 서버가 절대 보지 않음(제로지식). 웹이 개인키로 unwrap해 복호.
+  wrapped_dek       text,
+  dek_kid           int not null default 1
 );
 create index if not exists devices_owner_idx on public.devices(owner_id);
+-- 기존 배포(devices 테이블이 이미 있는 경우)에도 E2EE 컬럼을 추가(create table if not exists는 스킵되므로).
+alter table public.devices add column if not exists wrapped_dek text;
+alter table public.devices add column if not exists dek_kid    int not null default 1;
 
 do $$ begin
   if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and tablename='devices') then
@@ -116,6 +125,30 @@ drop policy if exists bf_insert on public.backfill_requests;
 create policy bf_insert on public.backfill_requests
   for insert to authenticated with check (owner_id = auth.uid());
 -- update/delete 정책 없음 → 함수의 service_role만 done 처리(관리자 직접 수정 불가).
+
+-- =====================================================================
+-- 2c. owner_keys — 관리자(owner)별 E2EE 키 자료. 전부 "비밀 아님"(패스프레이즈 없인 무용).
+--    public_key: owner 공개키(SPKI). 컬렉터가 per-device DEK를 이걸로 봉인.
+--    wrapped_private_key: 개인키(PKCS8)를 패스프레이즈 유도 KEK로 봉인(envelope).
+--    wrapped_private_key_recovery: 복구코드로 한 번 더 봉인(분실 대비, 선택).
+--    개인키 평문·패스프레이즈는 서버에 절대 올라가지 않는다(웹에서만 복원).
+-- =====================================================================
+create table if not exists public.owner_keys (
+  owner_id                     uuid primary key references auth.users(id) on delete cascade,
+  public_key                   text not null,               -- SPKI base64 (RSA-OAEP 공개키)
+  wrapped_private_key          jsonb not null,              -- {v,n,ct} KEK로 봉인한 PKCS8
+  wrapped_private_key_recovery jsonb,                       -- 복구코드로 봉인(선택)
+  kdf                          text not null default 'pbkdf2-sha256',
+  kdf_params                   jsonb not null,              -- { salt, iterations }
+  kid                          int  not null default 1,     -- 공개키 세대(회전 대비)
+  created_at                   timestamptz not null default now()
+);
+
+-- RLS: 관리자는 자기 키 자료만 읽고/쓴다. 함수(service_role)는 RLS 우회로 public_key만 읽음.
+alter table public.owner_keys enable row level security;
+drop policy if exists ok_rw on public.owner_keys;
+create policy ok_rw on public.owner_keys
+  for all to authenticated using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 
 -- =====================================================================
 -- 3. sessions 뷰 — 필터 드롭다운(세션/머신)을 DB 전체에서 채움.

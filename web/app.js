@@ -38,6 +38,90 @@
     realtime: { params: { eventsPerSecond: 20 } },
   });
 
+  // ---------- E2EE (종단간 암호화) ----------
+  // 관리자 RSA 키쌍(개인키는 패스프레이즈로 봉인되어 서버 보관, 평문은 브라우저에서만 복원).
+  // per-device DEK(AES-256)는 owner 공개키로 봉인되어 devices.wrapped_dek 에 저장됨.
+  // 운영자/DB는 암호문만 본다. 메타데이터는 평문(필터/인덱스용).
+  const KDF_ITERS = 600000;
+  const dekCache = new Map();    // device_id -> CryptoKey(AES-GCM)
+  let ownerPrivKey = null;       // CryptoKey (RSA-OAEP private)
+  let ownerKeysRow = null;       // owner_keys 행
+
+  function bufToB64(buf) {
+    const b = new Uint8Array(buf); let s = "";
+    for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+    return btoa(s);
+  }
+  function b64ToBuf(s) {
+    const bin = atob(s); const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return u.buffer;
+  }
+  async function deriveKEK(passphrase, saltBuf, iters) {
+    const base = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey(
+      { name: "PBKDF2", salt: saltBuf, iterations: iters, hash: "SHA-256" },
+      base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  }
+  async function aesWrap(kek, dataBuf) {
+    const n = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv: n }, kek, dataBuf);
+    return { v: 1, n: bufToB64(n), ct: bufToB64(ct) };
+  }
+  async function aesUnwrap(kek, env) {
+    return crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: new Uint8Array(b64ToBuf(env.n)) }, kek, b64ToBuf(env.ct));
+  }
+  async function genOwnerKeypair() {
+    return crypto.subtle.generateKey(
+      { name: "RSA-OAEP", modulusLength: 3072, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+      true, ["encrypt", "decrypt"]);
+  }
+  async function exportPubSPKI(pub) { return bufToB64(await crypto.subtle.exportKey("spki", pub)); }
+  async function wrapPriv(kek, priv) { return aesWrap(kek, await crypto.subtle.exportKey("pkcs8", priv)); }
+  async function importPriv(pkcs8Buf) {
+    return crypto.subtle.importKey("pkcs8", pkcs8Buf, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["decrypt"]);
+  }
+  async function unwrapPriv(kek, env) { return importPriv(await aesUnwrap(kek, env)); }
+
+  // 이 디바이스의 DEK 복원(개인키로 RSA-OAEP unwrap → AES 키). 캐시.
+  async function dekForDevice(deviceId) {
+    if (!deviceId || !ownerPrivKey) return null;
+    if (dekCache.has(deviceId)) return dekCache.get(deviceId);
+    const d = deviceMap.get(deviceId);
+    if (!d || !d.wrapped_dek) return null;
+    try {
+      const raw = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, ownerPrivKey, b64ToBuf(d.wrapped_dek));
+      const key = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["decrypt"]);
+      dekCache.set(deviceId, key);
+      return key;
+    } catch (e) { return null; }
+  }
+  async function decField(dek, env) {
+    const pt = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: new Uint8Array(b64ToBuf(env.n)) }, dek, b64ToBuf(env.ct));
+    return JSON.parse(new TextDecoder().decode(pt));
+  }
+  // 암호화 행을 제자리 복호화(payload/raw 평문 객체로 치환). 실패 시 _encLocked.
+  async function decryptEvent(ev) {
+    if (!ev || ev.enc_version !== 1 || ev._dec) return ev;
+    const dek = await dekForDevice(ev.device_id);
+    if (!dek) { ev._encLocked = true; return ev; }
+    try {
+      if (ev.payload && ev.payload.ct) ev.payload = await decField(dek, ev.payload);
+      if (ev.raw && ev.raw.ct) ev.raw = await decField(dek, ev.raw);
+      ev._dec = true; ev._encLocked = false;
+      // 잠긴 상태로 분류(info)됐을 수 있으니 메모이즈 해제 → 복호 후 재분류.
+      delete ev._sev; delete ev._cat;
+    } catch (e) { ev._encLocked = true; }
+    return ev;
+  }
+  async function decryptRows(rows) {
+    for (const ev of (rows || [])) await decryptEvent(ev);
+    return rows;
+  }
+
   // ---------- 유틸 ----------
   function esc(s) {
     return String(s == null ? "" : s)
@@ -68,6 +152,9 @@
 
   // ---------- 렌더 ----------
   function payloadText(ev) {
+    if (ev.enc_version === 1 && !ev._dec) {
+      return ev._encLocked ? "🔒 복호화 불가 (이 디바이스 키 없음/손상)" : "🔒 잠김 — 잠금 해제 필요";
+    }
     const p = ev.payload || {};
     if (ev.kind === "tool_result") return p.output_full || "";
     if (ev.kind === "user_prompt" || ev.kind === "assistant_text") return p.text || "";
@@ -433,6 +520,7 @@
       emptyEl.textContent = "조회 오류: " + error.message + " (anon 키/RLS 확인)";
       return;
     }
+    await decryptRows(data || []);
     applyPage(data || []);
     refreshFilterOptions();
     render(true);
@@ -450,6 +538,7 @@
       `received_at.lt.${curRecv},and(received_at.eq.${curRecv},event_id.lt.${curId})`
     );
     if (error) { updateLoadMore(); return; }
+    await decryptRows(data || []);
     applyPage(data || []);
     refreshFilterOptions();
     render(false);  // 과거를 위로 붙이므로 스크롤 위치 유지
@@ -470,6 +559,7 @@
       q = applyServerFilters(q);
       const { data, error } = await q;
       if (!error && Array.isArray(data)) {
+        await decryptRows(data);
         let added = 0;
         for (const ev of data) { if (!store.has(ev.event_id)) added++; upsert(ev); if (ev.session_id) knownSessions.add(ev.session_id); }
         if (added) { refreshFilterOptions(); render(true); }
@@ -483,7 +573,8 @@
   function subscribe() {
     if (evChannel) { try { client.removeChannel(evChannel); } catch (_) {} evChannel = null; }
     evChannel = client.channel("periscribe-events")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: table }, (payload) => {
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: table }, async (payload) => {
+        await decryptEvent(payload.new);
         upsert(payload.new);
         if (dbTotal != null) dbTotal += 1;
         // 새 세션이 생기면 세션 드롭다운을 DB 전체 기준으로 갱신
@@ -603,8 +694,15 @@
     if (devChannel) { try { client.removeChannel(devChannel); } catch (_) {} devChannel = null; }
     devChannel = client.channel("periscribe-devices")
       .on("postgres_changes", { event: "*", schema: "public", table: "devices" }, (p) => {
-        if (p.new && p.new.id) deviceMap.set(p.new.id, p.new);
-        else if (p.old && p.old.id) deviceMap.delete(p.old.id);
+        if (p.new && p.new.id) {
+          const prev = deviceMap.get(p.new.id);
+          deviceMap.set(p.new.id, p.new);
+          // 봉인 DEK가 새로 도착/변경되면 캐시 무효화 + 잠긴 이벤트 재복호화.
+          if (p.new.wrapped_dek && (!prev || prev.wrapped_dek !== p.new.wrapped_dek)) {
+            dekCache.delete(p.new.id);
+            redecryptLocked();
+          }
+        } else if (p.old && p.old.id) deviceMap.delete(p.old.id);
         renderHealth(); renderDeviceList();
       }).subscribe((status) => {
         if (status === "SUBSCRIBED") loadDevices();   // (재)구독 시 디바이스 상태 재동기화
@@ -699,15 +797,172 @@
     }
   });
 
+  // ---------- E2EE 게이트(키 셋업/잠금해제 모달) ----------
+  function encShow(view) {
+    ["enc-setup", "enc-recovery-show", "enc-unlock", "enc-recover"].forEach((id) => {
+      const e = document.getElementById(id);
+      if (e) e.style.display = (id === view) ? "" : "none";
+    });
+    const m = document.getElementById("enc-modal");
+    if (m) m.style.display = "flex";
+  }
+  function encHide() { const m = document.getElementById("enc-modal"); if (m) m.style.display = "none"; }
+  async function cachePriv() {
+    try { sessionStorage.setItem("pscb_pk", bufToB64(await crypto.subtle.exportKey("pkcs8", ownerPrivKey))); }
+    catch (e) { /* sessionStorage 불가 환경: 메모리만 사용(새로고침 시 재입력) */ }
+  }
+  function genRecoveryCode() {
+    const a = new Uint8Array(20); crypto.getRandomValues(a);
+    const hex = Array.from(a).map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+    return hex.match(/.{1,5}/g).join("-");
+  }
+  async function fetchOwnerKeys() {
+    const { data, error } = await client.from("owner_keys").select("*").eq("owner_id", currentUserId).maybeSingle();
+    return error ? null : (data || null);
+  }
+  async function ensureEncUnlocked() {
+    ownerKeysRow = await fetchOwnerKeys();
+    if (!ownerKeysRow) return encSetupFlow();
+    const cached = sessionStorage.getItem("pscb_pk");
+    if (cached) {
+      try { ownerPrivKey = await importPriv(b64ToBuf(cached)); return true; }
+      catch (e) { sessionStorage.removeItem("pscb_pk"); }
+    }
+    return encUnlockFlow();
+  }
+
+  function encSetupFlow() {
+    return new Promise((resolve) => {
+      encShow("enc-setup");
+      const form = document.getElementById("enc-setup");
+      const err = document.getElementById("enc-setup-err");
+      form.onsubmit = async (e) => {
+        e.preventDefault(); err.textContent = "";
+        const p1 = document.getElementById("enc-pp1").value, p2 = document.getElementById("enc-pp2").value;
+        if (p1.length < 8) { err.textContent = "패스프레이즈는 8자 이상이어야 합니다."; return; }
+        if (p1 !== p2) { err.textContent = "패스프레이즈가 일치하지 않습니다."; return; }
+        const btn = form.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "생성 중…";
+        try {
+          const kp = await genOwnerKeypair();
+          const salt = crypto.getRandomValues(new Uint8Array(16));
+          const rsalt = crypto.getRandomValues(new Uint8Array(16));
+          const kek = await deriveKEK(p1, salt, KDF_ITERS);
+          const wrapped = await wrapPriv(kek, kp.privateKey);
+          const recCode = genRecoveryCode();
+          const rkek = await deriveKEK(recCode, rsalt, KDF_ITERS);
+          const wrappedRec = await wrapPriv(rkek, kp.privateKey);
+          const row = {
+            owner_id: currentUserId,
+            public_key: await exportPubSPKI(kp.publicKey),
+            wrapped_private_key: wrapped,
+            wrapped_private_key_recovery: wrappedRec,
+            kdf: "pbkdf2-sha256",
+            kdf_params: { salt: bufToB64(salt), iterations: KDF_ITERS, recovery_salt: bufToB64(rsalt) },
+            kid: 1,
+          };
+          const { error } = await client.from("owner_keys").insert(row);
+          if (error) { err.textContent = "저장 실패: " + error.message; btn.disabled = false; btn.textContent = "키 생성"; return; }
+          ownerKeysRow = row; ownerPrivKey = kp.privateKey; await cachePriv();
+          document.getElementById("enc-recovery-code").textContent = recCode;
+          const ack = document.getElementById("enc-recovery-ack");
+          const done = document.getElementById("enc-recovery-done");
+          ack.checked = false; done.disabled = true;
+          ack.onchange = () => { done.disabled = !ack.checked; };
+          done.onclick = () => { encHide(); resolve(true); };
+          encShow("enc-recovery-show");
+        } catch (ex) {
+          err.textContent = "오류: " + ex.message; btn.disabled = false; btn.textContent = "키 생성";
+        }
+      };
+    });
+  }
+
+  function encUnlockFlow() {
+    return new Promise((resolve) => {
+      encShow("enc-unlock");
+      const form = document.getElementById("enc-unlock");
+      const err = document.getElementById("enc-unlock-err");
+      form.onsubmit = async (e) => {
+        e.preventDefault(); err.textContent = "";
+        const pp = document.getElementById("enc-unlock-pp").value;
+        const btn = form.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "해제 중…";
+        try {
+          const kp = ownerKeysRow.kdf_params;
+          const kek = await deriveKEK(pp, new Uint8Array(b64ToBuf(kp.salt)), kp.iterations || KDF_ITERS);
+          ownerPrivKey = await unwrapPriv(kek, ownerKeysRow.wrapped_private_key);
+          await cachePriv();
+          document.getElementById("enc-unlock-pp").value = "";
+          encHide(); resolve(true);
+        } catch (ex) {
+          err.textContent = "패스프레이즈가 올바르지 않습니다.";
+          btn.disabled = false; btn.textContent = "잠금 해제";
+        }
+      };
+      document.getElementById("enc-use-recovery").onclick = () => encRecoverFlow(resolve);
+      document.getElementById("enc-recover-back").onclick = () => encShow("enc-unlock");
+    });
+  }
+
+  function encRecoverFlow(resolve) {
+    encShow("enc-recover");
+    const form = document.getElementById("enc-recover");
+    const err = document.getElementById("enc-recover-err");
+    form.onsubmit = async (e) => {
+      e.preventDefault(); err.textContent = "";
+      const code = document.getElementById("enc-recover-code").value.trim().toUpperCase();
+      const p1 = document.getElementById("enc-recover-pp1").value, p2 = document.getElementById("enc-recover-pp2").value;
+      if (p1.length < 8) { err.textContent = "새 패스프레이즈는 8자 이상이어야 합니다."; return; }
+      if (p1 !== p2) { err.textContent = "새 패스프레이즈가 일치하지 않습니다."; return; }
+      if (!ownerKeysRow.wrapped_private_key_recovery) { err.textContent = "복구코드가 설정되어 있지 않습니다."; return; }
+      const btn = form.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "복구 중…";
+      try {
+        const kp = ownerKeysRow.kdf_params;
+        const rkek = await deriveKEK(code, new Uint8Array(b64ToBuf(kp.recovery_salt)), kp.iterations || KDF_ITERS);
+        ownerPrivKey = await unwrapPriv(rkek, ownerKeysRow.wrapped_private_key_recovery);
+        const nsalt = crypto.getRandomValues(new Uint8Array(16));
+        const nkek = await deriveKEK(p1, nsalt, KDF_ITERS);
+        const nwrapped = await wrapPriv(nkek, ownerPrivKey);
+        const nparams = Object.assign({}, kp, { salt: bufToB64(nsalt), iterations: KDF_ITERS });
+        const { error } = await client.from("owner_keys")
+          .update({ wrapped_private_key: nwrapped, kdf_params: nparams }).eq("owner_id", currentUserId);
+        if (error) { err.textContent = "재설정 저장 실패: " + error.message; btn.disabled = false; btn.textContent = "복구 + 패스프레이즈 재설정"; return; }
+        ownerKeysRow.wrapped_private_key = nwrapped; ownerKeysRow.kdf_params = nparams;
+        await cachePriv();
+        encHide(); resolve(true);
+      } catch (ex) {
+        err.textContent = "복구코드가 올바르지 않습니다.";
+        btn.disabled = false; btn.textContent = "복구 + 패스프레이즈 재설정";
+      }
+    };
+  }
+
+  // 디바이스가 뒤늦게 wrapped_dek 를 받으면(부트스트랩 직후) 잠겨 있던 이벤트를 다시 복호화.
+  async function redecryptLocked() {
+    if (!ownerPrivKey) return;
+    let changed = 0;
+    for (const ev of store.values()) {
+      if (ev.enc_version === 1 && !ev._dec) {
+        ev._encLocked = false;
+        await decryptEvent(ev);
+        if (ev._dec) changed++;
+      }
+    }
+    if (changed) render(false);
+  }
+
   // ---------- 인증 게이트 ----------
   let appStarted = false;
   let inRecovery = false;  // 비번 재설정 링크로 들어온 동안엔 앱을 시작하지 않고 새 비번 폼을 보인다.
-  function initApp() {
+  async function initApp() {
     if (appStarted) return;
     appStarted = true;
-    loadFilterOptions();                 // DB 전체 세션/머신으로 드롭다운 채움
-    loadHistory().then(subscribe);
-    loadDevices().then(subscribeDevices);
+    await loadDevices();                  // devices.wrapped_dek 확보(복호화에 필요)
+    const ok = await ensureEncUnlocked(); // 키 셋업/잠금해제(취소 시 게이트 유지)
+    if (!ok) { appStarted = false; return; }
+    subscribeDevices();
+    loadFilterOptions();                  // DB 전체 세션/머신으로 드롭다운 채움
+    await loadHistory();
+    subscribe();
   }
   function showAuthed(session) {
     document.body.classList.add("authed");
@@ -747,6 +1002,8 @@
   });
   const logoutBtn = document.getElementById("logout");
   if (logoutBtn) logoutBtn.addEventListener("click", async () => {
+    try { sessionStorage.removeItem("pscb_pk"); } catch (e) { /* noop */ }
+    ownerPrivKey = null; dekCache.clear();
     await client.auth.signOut();
     location.reload();
   });

@@ -15,6 +15,43 @@ class DummySink:
         pass
 
 
+class EncSink:
+    """E2EE 부트스트랩 검증용 sink 스텁(공개키 수신 → DEK 생성 경로)."""
+    def __init__(self):
+        self.pub = None
+        self.dek = None
+    def emit(self, events):
+        pass
+    def has_dek(self):
+        return self.dek is not None
+    def set_public_key(self, pub, kid=1):
+        self.pub = pub
+    def set_dek(self, dek, kid=1):
+        self.dek = dek
+
+
+def test_handle_enc_bootstraps_dek(tmp_path):
+    cfg = Config()
+    cfg.watch_dir = str(tmp_path)
+    cfg.checkpoint_path = str(tmp_path / "cp.json")
+    cfg.encrypt = True
+    sink = EncSink()
+    c = Collector(cfg, sink)
+    assert c._enc_required is True
+    # 공개키 미수신 → 아무 일 없음
+    c._handle_enc(None)
+    assert sink.dek is None
+    # 공개키 수신 → 공개키 등록 + per-device DEK 생성·영속
+    c._handle_enc({"enc": {"public_key": "PUBKEY", "kid": 1}})
+    assert sink.pub == "PUBKEY"
+    assert sink.dek is not None and len(sink.dek) == 32
+    assert cfg.dek and cfg.dek_kid == 1
+    # 재호출 시 이미 DEK 있으면 새로 만들지 않음(같은 키 유지)
+    first = sink.dek
+    c._handle_enc({"enc": {"public_key": "PUBKEY", "kid": 1}})
+    assert sink.dek == first
+
+
 def make_file(p: Path, n_lines: int) -> str:
     # 실제 transcript와 동일하게 LF(\n)로 기록(Windows write_text의 CRLF 변환 회피).
     content = "\n".join(f'{{"i":{i}}}' for i in range(n_lines)) + "\n"

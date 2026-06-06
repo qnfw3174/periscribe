@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from . import __version__, crypto
 from .checkpoint import Checkpoint
 from .config import Config
 from .parser import Parser
@@ -46,6 +46,10 @@ class Collector:
         self._heartbeat_enabled = config.heartbeat_interval > 0 and hasattr(sink, "beat")
         self._last_beat = 0.0
 
+        # E2EE: 암호화 적재 필수 여부(설정 on + sink가 DEK를 지원할 때). StdoutSink(dry-run)는 제외.
+        self._enc_required = config.encrypt and hasattr(sink, "has_dek")
+        self._enc_hold_logged = False
+
         # 관측: 최근 오류를 하트비트에 실어 보낸다(웹에서 머신별 표시).
         self._last_error = ""
         self._last_drop_seen = ""        # poison 스킵 메시지 변화 감지용
@@ -58,6 +62,31 @@ class Collector:
         self._log_path = config.log_file or None
         if self._log_path:
             Path(self._log_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # 재시작 시 이미 DEK가 있으면 sink에 주입(공개키는 첫 하트비트에 갱신·재봉인).
+        if self._enc_required and config.dek:
+            try:
+                sink.set_dek(crypto.dek_from_b64(config.dek), config.dek_kid)  # type: ignore[attr-defined]
+            except Exception as e:
+                self._last_error = f"DEK 로드 실패: {e}"
+                self._log(f"[periscribe] DEK 로드 실패(재부트스트랩 시도): {e}")
+
+    # ---- E2EE: 하트비트 응답의 공개키 처리 + DEK 부트스트랩 ----
+    def _handle_enc(self, resp: dict[str, Any] | None) -> None:
+        if not resp or not self._enc_required or not hasattr(self.sink, "set_public_key"):
+            return
+        enc = resp.get("enc") or {}
+        pub = enc.get("public_key")
+        kid = int(enc.get("kid", 1) or 1)
+        if not pub:
+            return
+        self.sink.set_public_key(pub, kid)            # type: ignore[attr-defined]
+        # 아직 이 머신용 DEK가 없으면 로컬 생성·영속(패스프레이즈 불필요). 다음 하트비트에 봉인본 동봉.
+        if not self.sink.has_dek():                    # type: ignore[attr-defined]
+            dek = crypto.gen_dek()
+            self.config.persist_dek(crypto.dek_to_b64(dek), kid)
+            self.sink.set_dek(dek, kid)                # type: ignore[attr-defined]
+            self._log(f"[periscribe] 암호화 키(per-device DEK) 생성·등록 (kid={kid})")
 
     # ---- 파일 발견 ----
     def discover(self) -> list[str]:
@@ -232,6 +261,19 @@ class Collector:
                 resp = self._maybe_heartbeat()
                 if resp:
                     backfill_ids.update(resp.get("backfill") or [])
+                    self._handle_enc(resp)
+
+                # 암호화 필수인데 키가 아직 준비 안 됨(관리자 미설정/네트워크) → 평문 적재 금지, 보류.
+                # transcript는 디스크에 그대로 남고 오프셋도 전진 안 하므로 키 준비 후 손실 없이 재개.
+                if self._enc_required and not self.sink.has_dek():  # type: ignore[attr-defined]
+                    if not self._enc_hold_logged:
+                        self._log("[periscribe] 암호화 키 대기 중(웹에서 암호화 설정 필요) → 적재 보류")
+                        self._enc_hold_logged = True
+                    self._last_error = "암호화 키 대기 중 — 적재 보류"
+                    self._interruptible_sleep(self.config.poll_interval)
+                    continue
+                self._enc_hold_logged = False
+
                 files = self.discover()
                 total = 0
                 for fp in files:

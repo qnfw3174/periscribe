@@ -27,6 +27,11 @@
   "redact": false,
   "_redact_help": "클라우드 저장 민감정보 마스킹. 멀티 PC/공개 배포 시 true 권장.",
 
+  "encrypt": true,
+  "_encrypt_help": "종단간 암호화(E2EE). true면 owner 공개키를 받아 payload를 암호화 적재(운영자도 못 읽음). 관리자가 웹에서 암호화 설정을 하기 전까지는 적재를 보류한다. dek는 첫 실행에 자동 생성·기록되므로 수동 입력 불필요.",
+  "dek": "",
+  "dek_kid": 1,
+
   "heartbeat_interval": 30,
   "_heartbeat_help": "machines 테이블에 살아있음 신호 주기(초). 0이면 비활성.",
 
