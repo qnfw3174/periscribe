@@ -40,18 +40,18 @@ class IngestSink:
             "machine_id": machine_id,
         }
 
-    def emit(self, events: list[dict[str, Any]]) -> None:
+    def emit(self, events: list[dict[str, Any]]) -> dict[str, Any]:
         if not events:
-            return
+            return {}
         # 키 정규화(PGRST102 방지) + NUL 제거(22P05 방지)는 함수가 아니라 여기서.
         rows = _strip_nul(_normalize_rows(events))
-        self._post(rows)
+        return self._post(rows)
 
-    def beat(self) -> None:
-        """유휴 하트비트: 빈 events로 호출 → 함수가 devices.last_seen 갱신."""
-        self._post([])
+    def beat(self) -> dict[str, Any]:
+        """유휴 하트비트: 빈 events로 호출 → 함수가 devices.last_seen 갱신 + 백필 요청 반환."""
+        return self._post([])
 
-    def _post(self, rows: list[dict[str, Any]]) -> None:
+    def _post(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
         body = json.dumps(
             {"device_token": self.token, "machine": self.machine, "events": rows},
             ensure_ascii=False, default=str,
@@ -62,6 +62,12 @@ class IngestSink:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 if resp.status not in (200, 201, 204):
                     raise SinkError(f"ingest HTTP {resp.status}")
+                # 응답(JSON)에 백필 요청 등이 실려 온다. 파싱 실패는 무시(적재는 성공).
+                try:
+                    raw = resp.read().decode("utf-8", "replace")
+                    return json.loads(raw) if raw else {}
+                except Exception:
+                    return {}
         except urllib.error.HTTPError as e:
             detail = ""
             try:

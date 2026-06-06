@@ -39,6 +39,14 @@ class Checkpoint:
         self._state[file_path] = {"offset": offset, "inode": inode}
         self._flush()
 
+    def reset(self, file_path: str) -> bool:
+        """파일의 저장된 오프셋을 제거 → 다음 폴링에 처음부터(offset 0) 재적재. 백필용."""
+        if file_path in self._state:
+            del self._state[file_path]
+            self._flush()
+            return True
+        return False
+
     def _flush(self) -> None:
         # 원자적 쓰기: 같은 디렉터리에 temp 작성 후 os.replace
         d = self.path.parent

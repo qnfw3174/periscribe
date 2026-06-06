@@ -104,11 +104,11 @@ class Collector:
         return tailer
 
     # ---- 한 파일 1회 처리 ----
-    def _process_file(self, file_path: str, first_run: bool) -> int:
+    def _process_file(self, file_path: str, first_run: bool) -> tuple[int, dict[str, Any]]:
         tailer = self._ensure_tailer(file_path, first_run)
         lines, new_offset = tailer.read_new_lines()
         if not lines:
-            return 0
+            return 0, {}
 
         project = self._project_folder(file_path)
         container_id = self._container_id_for(file_path)
@@ -117,14 +117,34 @@ class Collector:
             events.extend(self.parser.parse_line(line, project, container_id))
 
         # 적재(배치). 실패하면 오프셋 전진 안 함 -> 다음 폴링 재시도(멱등이라 안전).
+        last_resp: dict[str, Any] = {}
         if events:
             for batch in _chunks(events, self.config.batch_size):
-                self.sink.emit(batch)  # 실패 시 SinkError 전파
+                r = self.sink.emit(batch)  # 실패 시 SinkError 전파
+                if r:
+                    last_resp = r
 
         # 적재 확정 후에만 오프셋 영속
         tailer.commit(new_offset)
         self.checkpoint.set(file_path, new_offset, tailer.inode)
-        return len(events)
+        return len(events), last_resp
+
+    # ---- 백필: 서버가 보낸 session_id의 로컬 파일을 처음부터 재적재(멱등) ----
+    def _apply_backfill(self, session_ids: set[str]) -> None:
+        for sid in session_ids:
+            if not sid:
+                continue
+            n = self._reset_session(sid)
+            self._log(f"[periscribe] 백필 요청 수신: session={sid} → 파일 {n}개 처음부터 재적재")
+
+    def _reset_session(self, session_id: str) -> int:
+        # transcript 파일명 stem == session_id, 또는 사이드체인이 session_id 폴더 아래에 있음.
+        targeted = [f for f in self.discover()
+                    if Path(f).stem == session_id or session_id in Path(f).parts]
+        for f in targeted:
+            self.checkpoint.reset(f)     # 저장 오프셋 제거
+            self.tailers.pop(f, None)    # 다음 폴링에 offset 0부터 새 tailer 생성
+        return len(targeted)
 
     # ---- 로깅 (stderr + 선택적 파일, 크기 기반 로테이션) ----
     def _log(self, msg: str) -> None:
@@ -159,17 +179,19 @@ class Collector:
                     pass
 
     # ---- 하트비트 ----
-    def _maybe_heartbeat(self) -> None:
+    def _maybe_heartbeat(self) -> dict[str, Any] | None:
         if not self._heartbeat_enabled:
-            return
+            return None
         now = time.time()
         if now - self._last_beat < self.config.heartbeat_interval:
-            return
+            return None
         try:
-            self.sink.beat()  # 빈 ingest → 함수가 devices.last_seen 갱신
+            resp = self.sink.beat()  # 빈 ingest → 함수가 last_seen 갱신 + 백필 요청 반환
             self._last_beat = now
+            return resp
         except Exception as e:
             self._log(f"[periscribe] 하트비트 실패: {e}")
+            return None
 
     # ---- 메인 루프 ----
     def run(self) -> None:
@@ -182,12 +204,18 @@ class Collector:
 
         while self._running:
             try:
-                self._maybe_heartbeat()
+                backfill_ids: set[str] = set()
+                resp = self._maybe_heartbeat()
+                if resp:
+                    backfill_ids.update(resp.get("backfill") or [])
                 files = self.discover()
                 total = 0
                 for fp in files:
                     try:
-                        total += self._process_file(fp, first_run)
+                        cnt, fresp = self._process_file(fp, first_run)
+                        total += cnt
+                        if fresp:
+                            backfill_ids.update(fresp.get("backfill") or [])
                     except SinkError as e:
                         # 네트워크/적재 실패: 이 파일 오프셋은 전진 안 됨. 다음 폴링 재시도.
                         self._log(f"[periscribe] sink 실패(재시도 예정): {e}")
@@ -196,6 +224,8 @@ class Collector:
                         self._log(f"[periscribe] 파일 처리 오류 {fp}: {e}")
                 if total:
                     self._log(f"[periscribe] +{total} events")
+                if backfill_ids:
+                    self._apply_backfill(backfill_ids)
                 first_run = False
             except Exception as e:
                 self._log(f"[periscribe] 루프 오류: {e}")

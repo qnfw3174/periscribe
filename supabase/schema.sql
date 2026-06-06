@@ -84,6 +84,34 @@ create policy devices_update on public.devices
   for update to authenticated using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 
 -- =====================================================================
+-- 2b. backfill_requests — 웹에서 "이 세션 과거 전체 불러오기" 요청.
+--    Edge Function(ingest)이 하트비트 응답으로 디바이스에 전달 → 컬렉터가 로컬 파일을
+--    처음부터 재적재(멱등). 관리자는 자기 것만 insert/조회, 함수(service_role)가 done 처리.
+-- =====================================================================
+create table if not exists public.backfill_requests (
+  id           uuid primary key default gen_random_uuid(),
+  owner_id     uuid not null references auth.users(id) on delete cascade,
+  device_id    uuid references public.devices(id) on delete cascade,  -- 이 세션을 적재한 디바이스
+  session_id   text not null,
+  status       text not null default 'pending',                       -- pending | done
+  requested_at timestamptz not null default now(),
+  done_at      timestamptz
+);
+create index if not exists backfill_owner_idx
+  on public.backfill_requests(owner_id);
+create index if not exists backfill_device_pending_idx
+  on public.backfill_requests(device_id, status);
+
+alter table public.backfill_requests enable row level security;
+drop policy if exists bf_read on public.backfill_requests;
+create policy bf_read on public.backfill_requests
+  for select to authenticated using (owner_id = auth.uid());
+drop policy if exists bf_insert on public.backfill_requests;
+create policy bf_insert on public.backfill_requests
+  for insert to authenticated with check (owner_id = auth.uid());
+-- update/delete 정책 없음 → 함수의 service_role만 done 처리(관리자 직접 수정 불가).
+
+-- =====================================================================
 -- 3. sessions 뷰 — 필터 드롭다운(세션/머신)을 DB 전체에서 채움.
 --    security_invoker=true 로 events RLS(owner 스코핑)를 상속 → 자동 격리.
 -- =====================================================================

@@ -406,6 +406,18 @@
     loadMoreBtn.textContent = "↑ 더 불러오기 (과거)";
   }
 
+  // 세션이 선택됐을 때만 "이 세션 과거 전체 불러오기"(컬렉터 백필) 버튼을 보인다.
+  function updateBackfill() {
+    const b = document.getElementById("backfill-session");
+    if (!b) return;
+    const on = !!(F.session && F.session.value);
+    b.style.display = on ? "" : "none";
+    if (on && !b.dataset.busy) {
+      b.disabled = false;
+      b.textContent = "⟳ 이 세션 과거 전체 불러오기 (수집 PC)";
+    }
+  }
+
   async function loadHistory() {
     setConn("off", "과거 로드 중…");
     curRecv = null; curId = null; reachedEnd = false; store.clear();
@@ -423,6 +435,7 @@
     refreshFilterOptions();
     render(true);
     updateLoadMore();
+    updateBackfill();
     setConn("on", "실시간 구독 중");
   }
 
@@ -480,6 +493,34 @@
     el.addEventListener("change", () => render(false)));
   document.getElementById("reload").addEventListener("click", loadHistory);
   if (loadMoreBtn) loadMoreBtn.addEventListener("click", loadMore);
+
+  // "이 세션 과거 전체 불러오기": 백필 요청을 넣으면 수집 PC가 하트비트 때 받아 로컬 파일을
+  // 처음부터 재적재한다(멱등). 채워지는 과거 이벤트는 Realtime 으로 들어와 자동 렌더.
+  const backfillBtn = document.getElementById("backfill-session");
+  if (backfillBtn) backfillBtn.addEventListener("click", async () => {
+    const sid = F.session.value;
+    if (!sid) return;
+    backfillBtn.dataset.busy = "1";
+    backfillBtn.disabled = true; backfillBtn.textContent = "요청 중…";
+    // 이 세션을 적재한 디바이스 찾기(요청을 그 디바이스로 라우팅).
+    const { data: ev } = await client.from(table).select("device_id")
+      .eq("session_id", sid).not("device_id", "is", null).limit(1);
+    const device_id = ev && ev[0] ? ev[0].device_id : null;
+    if (!device_id) {
+      backfillBtn.disabled = false; delete backfillBtn.dataset.busy;
+      backfillBtn.textContent = "수집 디바이스를 못 찾음";
+      return;
+    }
+    const { error } = await client.from("backfill_requests")
+      .insert({ owner_id: currentUserId, session_id: sid, device_id });
+    if (error) {
+      backfillBtn.disabled = false; delete backfillBtn.dataset.busy;
+      backfillBtn.textContent = "요청 실패: " + esc(error.message);
+      return;
+    }
+    backfillBtn.textContent = "✓ 요청됨 — 수집 PC가 온라인이면 곧 채워집니다";
+    setTimeout(() => { delete backfillBtn.dataset.busy; updateBackfill(); }, 8000);
+  });
 
   // ---------- 머신(디바이스) 헬스 + 관리 ----------
   const healthChips = document.getElementById("health-chips");

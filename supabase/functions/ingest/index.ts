@@ -67,5 +67,27 @@ Deno.serve(async (req: Request) => {
     }),
   });
 
-  return json({ ok: true, inserted: events.length });
+  // 백필 요청 픽업: 이 디바이스의 pending 요청을 가져와 done 처리하고 session_id 목록을 반환.
+  // 컬렉터는 이 목록의 로컬 transcript 파일을 처음부터 재적재(멱등)한다.
+  let backfill: string[] = [];
+  try {
+    const bResp = await fetch(
+      `${SUPABASE_URL}/rest/v1/backfill_requests?select=id,session_id&device_id=eq.${dev.id}&status=eq.pending`,
+      { headers: svcHeaders() },
+    );
+    if (bResp.ok) {
+      const reqs = await bResp.json();
+      if (Array.isArray(reqs) && reqs.length > 0) {
+        backfill = reqs.map((r: any) => r.session_id).filter(Boolean);
+        const ids = reqs.map((r: any) => r.id).join(",");
+        await fetch(`${SUPABASE_URL}/rest/v1/backfill_requests?id=in.(${ids})`, {
+          method: "PATCH",
+          headers: svcHeaders({ "Content-Type": "application/json", Prefer: "return=minimal" }),
+          body: JSON.stringify({ status: "done", done_at: new Date().toISOString() }),
+        });
+      }
+    }
+  } catch (_) { /* 백필 픽업 실패는 적재 성공을 막지 않음 */ }
+
+  return json({ ok: true, inserted: events.length, backfill });
 });
