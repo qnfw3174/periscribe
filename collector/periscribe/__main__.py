@@ -1,10 +1,12 @@
 """CLI 엔트리.
 
-  periscribe                  (더블클릭/인자 없음) 미설치면 토큰만 입력받아 자동 설치, 설치됐으면 상태 안내
-  periscribe setup            토큰 입력 → config 작성 + 작업 등록(대화형). 더블클릭과 동일
+  periscribe                  (더블클릭/인자 없음) GUI 설치 창(토큰 붙여넣기). exe가 아니면 run.
+  periscribe setup            콘솔 대화형 설치(토큰 입력). 터미널용
   periscribe [run] [옵션]     수집 루프 실행
-  periscribe install ...      비대화형 설치(--token/--url). 자동화/스크립트용
-  periscribe uninstall        작업 제거
+  periscribe install ...      비대화형 설치(--token[/--url]). 자동화/스크립트용
+  periscribe uninstall        자동시작 해제
+
+자동시작은 HKCU Run 레지스트리 키(관리자 권한 불필요)로 등록한다.
 
 옵션은 config.json / 환경변수(PERISCRIBE_*) / 커맨드라인 순으로 덮어쓴다.
 단일 exe(PyInstaller)에서도 동일하게 동작한다(sys.frozen 감지).
@@ -73,6 +75,42 @@ def _pause() -> None:
     """더블클릭으로 뜬 콘솔이 즉시 닫혀 메시지를 못 보는 일을 막는다."""
     try:
         input("\nEnter 키를 누르면 종료합니다...")
+    except Exception:
+        pass
+
+
+# 자동시작: 작업 스케줄러(schtasks)는 환경에 따라 권한을 타서 "액세스 거부"가 난다.
+# HKCU\...\Run 은 현재 사용자 키라 관리자 권한 없이 등록되고 로그온 시 자동 실행된다.
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def _set_autostart(name: str, command: str) -> None:
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+        winreg.SetValueEx(k, name, 0, winreg.REG_SZ, command)
+
+
+def _del_autostart(name: str) -> None:
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, name)
+    except FileNotFoundError:
+        pass
+
+
+def _start_collector(config_path: Path) -> None:
+    """수집기를 분리된 백그라운드 프로세스(창 없음)로 즉시 실행한다."""
+    if getattr(sys, "frozen", False):
+        args = [sys.executable, "run", "-c", str(config_path)]
+    else:
+        pyw = str(Path(sys.executable).with_name("pythonw.exe"))
+        args = [pyw, "-m", "periscribe", "run", "-c", str(config_path)]
+    flags = 0
+    if os.name == "nt":
+        flags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
+    try:
+        subprocess.Popen(args, creationflags=flags, close_fds=True)
     except Exception:
         pass
 
@@ -153,7 +191,7 @@ def cmd_install(argv: list[str]) -> int:
         run_cmd = f'"{pyw}" -m periscribe run -c "{config_path}"'
 
     print(f"[install] config: {config_path}")
-    print(f"[install] task '{a.task_name}' command: {run_cmd}")
+    print(f"[install] 자동시작 '{a.task_name}': {run_cmd}")
     if a.dry_run:
         print("[install] --dry-run: 실제 변경 없음")
         return 0
@@ -163,19 +201,14 @@ def cmd_install(argv: list[str]) -> int:
     (data / "logs").mkdir(exist_ok=True)
     config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 재설정 시 중복 실행 방지: 기존 작업이 돌고 있으면 먼저 정지(없으면 무시).
-    subprocess.call(["schtasks", "/End", "/TN", a.task_name],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    # 작업 스케줄러 등록(로그온 시 자동 시작, 현재 사용자)
-    rc = subprocess.call([
-        "schtasks", "/Create", "/TN", a.task_name, "/TR", run_cmd,
-        "/SC", "ONLOGON", "/RL", "LIMITED", "/F",
-    ])
-    if rc != 0:
-        print(f"[install] 작업 등록 실패(schtasks rc={rc}). 관리자 권한 또는 정책 확인.", file=sys.stderr)
-        return rc
-    subprocess.call(["schtasks", "/Run", "/TN", a.task_name])
+    # 자동 시작 등록: HKCU\...\Run (관리자 권한 불필요 → schtasks "액세스 거부" 문제 회피).
+    _set_autostart(a.task_name, run_cmd)
+    # 옛 버전(schtasks)으로 설치했던 흔적이 있으면 정리.
+    if os.name == "nt":
+        subprocess.call(["schtasks", "/Delete", "/TN", a.task_name, "/F"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # 다음 로그인까지 기다리지 않고 지금 바로 백그라운드 실행.
+    _start_collector(config_path)
     print(f"[install] 완료. 헬스바에 곧 표시됩니다. 로그: {cfg['log_file']}")
     return 0
 
@@ -223,13 +256,100 @@ def cmd_uninstall(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="periscribe uninstall")
     p.add_argument("--task-name", default=TASK_NAME)
     a = p.parse_args(argv)
-    subprocess.call(["schtasks", "/End", "/TN", a.task_name])
-    rc = subprocess.call(["schtasks", "/Delete", "/TN", a.task_name, "/F"])
-    print("[uninstall] 작업 제거" + ("됨" if rc == 0 else f" 실패(rc={rc})"))
+    _del_autostart(a.task_name)
+    if os.name == "nt":
+        # 옛 schtasks 설치 흔적도 제거(있으면).
+        subprocess.call(["schtasks", "/End", "/TN", a.task_name],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.call(["schtasks", "/Delete", "/TN", a.task_name, "/F"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print("[uninstall] 자동시작 해제됨. 실행 중인 수집기는 다음 로그인부터 시작되지 않습니다.")
+    return 0
+
+
+# ---------------- GUI 설치(더블클릭) ----------------
+def gui_setup() -> int:
+    """창(GUI)으로 토큰을 입력받아 설치. tkinter가 없으면 콘솔(cmd_setup)로 폴백."""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+    except Exception:
+        return cmd_setup([])
+
+    root = tk.Tk()
+    root.title("Periscribe Collector 설치")
+    root.resizable(False, False)
+    frm = tk.Frame(root, padx=22, pady=18)
+    frm.pack(fill="both", expand=True)
+
+    tk.Label(frm, text="Periscribe Collector 설치", font=("Segoe UI", 13, "bold")).pack(anchor="w")
+    tk.Label(frm, text="웹 [⚙ 머신 관리]에서 발급받은 디바이스 토큰을 붙여넣으세요.",
+             fg="#555").pack(anchor="w", pady=(2, 12))
+
+    tk.Label(frm, text="디바이스 토큰").pack(anchor="w")
+    token_var = tk.StringVar()
+    ent = tk.Entry(frm, textvariable=token_var, width=54)
+    ent.pack(fill="x")
+    ent.focus_set()
+
+    tk.Label(frm, text="머신 이름 (선택)").pack(anchor="w", pady=(10, 0))
+    name_var = tk.StringVar(value=socket.gethostname())
+    tk.Entry(frm, textvariable=name_var, width=54).pack(fill="x")
+
+    status = tk.Label(frm, text="", fg="#c0392b", wraplength=360, justify="left")
+    status.pack(anchor="w", pady=(10, 0))
+
+    if _is_installed():
+        status.config(text="이미 설치돼 있습니다. 새 토큰으로 다시 설치할 수 있습니다.", fg="#555")
+
+    def do_install() -> None:
+        token = token_var.get().strip()
+        if not token:
+            status.config(text="디바이스 토큰을 입력하세요.", fg="#c0392b")
+            return
+        name = name_var.get().strip()
+        btn.config(state="disabled", text="설치 중…")
+        root.update()
+        try:
+            args = ["--token", token]
+            if name:
+                args += ["--name", name]
+            rc = cmd_install(args)
+            if rc == 0:
+                messagebox.showinfo(
+                    "Periscribe",
+                    "설치 완료!\n\n백그라운드에서 자동 실행되며,\n로그인할 때마다 자동으로 시작됩니다.\n웹 화면에 잠시 후 이 PC가 표시됩니다.",
+                )
+                root.destroy()
+            else:
+                status.config(text=f"설치 실패 (코드 {rc}).", fg="#c0392b")
+                btn.config(state="normal", text="설치")
+        except Exception as e:
+            status.config(text=f"오류: {e}", fg="#c0392b")
+            btn.config(state="normal", text="설치")
+
+    btn = tk.Button(frm, text="설치", command=do_install, width=14)
+    btn.pack(anchor="e", pady=(14, 0))
+    root.bind("<Return>", lambda _e: do_install())
+
+    # 화면 중앙 배치
+    root.update_idletasks()
+    w, h = root.winfo_width(), root.winfo_height()
+    x = (root.winfo_screenwidth() - w) // 2
+    y = (root.winfo_screenheight() - h) // 3
+    root.geometry(f"+{x}+{y}")
+
+    root.mainloop()
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
+    # windowed(콘솔 없는) 빌드에선 stdout/stderr가 None일 수 있어 print()가 죽는다. 더미로 대체.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "install":
         return cmd_install(argv[1:])
@@ -241,15 +361,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(argv[1:])
 
     if not argv:
-        # 단일 exe 더블클릭: 미설치면 대화형 설치, 설치돼 있으면 안내(중복 실행 방지).
+        # 단일 exe 더블클릭: GUI 설치 창(설치돼 있으면 재설치 안내도 GUI에서).
         if getattr(sys, "frozen", False):
-            if _is_installed():
-                print("Periscribe가 이미 설치되어 백그라운드에서 실행 중입니다.")
-                print("  토큰 재설정: periscribe.exe setup")
-                print("  제거:       periscribe.exe uninstall")
-                _pause()
-                return 0
-            return cmd_setup([])
+            return gui_setup()
         # 소스 실행(개발): 기존처럼 로컬 config.json 으로 run.
         return cmd_run([])
 

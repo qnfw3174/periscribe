@@ -13,7 +13,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $collector = Resolve-Path (Join-Path $here "..\collector")
 
 python -m pip install --quiet --upgrade pyinstaller
-python -m PyInstaller --noconfirm --onefile --console --name periscribe `
+python -m PyInstaller --noconfirm --onefile --windowed --name periscribe `
   --paths "$collector" `
   --distpath (Join-Path $here "dist") `
   --workpath (Join-Path $here "build") `
