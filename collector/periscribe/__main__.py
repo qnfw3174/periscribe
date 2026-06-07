@@ -199,6 +199,10 @@ def cmd_install(argv: list[str]) -> int:
     config_path = data / "config.json"
     cfg = {
         "watch_dir": "", "machine_id": a.name, "poll_interval": 0.4,
+        # 컨테이너(devcontainer) transcript 루트. devcontainer.json이 컨테이너의
+        # ~/.claude/projects 를 %USERPROFILE%\periscribe-agents\<이름> 으로 바인드하므로
+        # 그 부모를 기본 감시. 폴더가 없으면 discover()가 건너뛰어 무해(컨테이너 미사용 시).
+        "container_root": str(Path.home() / "periscribe-agents"),
         "ingest_url": a.url, "device_token": a.token, "batch_size": 500,
         "checkpoint_path": str(data / "checkpoints" / "offsets.json"),
         "backfill": 0, "store_raw": False, "store_thinking": False, "redact": True,
