@@ -783,9 +783,12 @@
         : d.revoked ? '<span class="dev-revoked">revoked</span>'
         : isOnline(d) ? '<span class="dev-online">● 온라인</span>'
         : `<span class="dev-stale">● ${d.last_seen ? relTime(d.last_seen) : "대기"}</span>`;
-      // 활성 머신: revoke / 비활성(revoked·제거됨): 목록에서 완전 삭제
-      const action = (d.revoked || d.uninstalled_at)
+      // 제거됨(uninstall): 삭제만 / 관리자 revoke: 재활성+삭제 / 활성: revoke
+      const action = d.uninstalled_at
         ? `<button class="btn ghost btn-sm" data-delete="${d.id}">삭제</button>`
+        : d.revoked
+        ? `<button class="btn ghost btn-sm" data-restore="${d.id}">재활성</button> ` +
+          `<button class="btn ghost btn-sm" data-delete="${d.id}">삭제</button>`
         : `<button class="btn ghost btn-sm" data-revoke="${d.id}">revoke</button>`;
       const warn = (d.last_error && !d.uninstalled_at)
         ? `<span class="dev-warn" title="${esc(d.last_error)}${d.last_error_at ? " (" + esc(relTime(d.last_error_at)) + ")" : ""}">⚠</span> `
@@ -838,6 +841,13 @@
     if (!t || !t.getAttribute) return;
     const rev = t.getAttribute("data-revoke");
     if (rev) { await client.from("devices").update({ revoked: true }).eq("id", rev); loadDevices(); return; }
+    const res = t.getAttribute("data-restore");
+    if (res) {
+      // 재활성: revoked 해제. 컬렉터가 아직 살아 백오프 중이면 자동 재개, 종료됐으면 재시작 필요.
+      await client.from("devices").update({ revoked: false }).eq("id", res);
+      loadDevices();
+      return;
+    }
     const del = t.getAttribute("data-delete");
     if (del) {
       if (!confirm("이 머신과 수집된 로그를 모두 영구 삭제합니다. 되돌릴 수 없습니다. 계속할까요?")) return;
