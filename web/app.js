@@ -595,9 +595,15 @@
       const { data, error } = await q;
       if (!error && Array.isArray(data)) {
         await decryptRows(data);
-        let added = 0;
-        for (const ev of data) { if (!store.has(ev.event_id)) added++; upsert(ev); if (ev.session_id) knownSessions.add(ev.session_id); }
+        let added = 0, newSession = false;
+        for (const ev of data) {
+          if (!store.has(ev.event_id)) added++;
+          upsert(ev);
+          // catchUp 중 처음 보는 세션이면 드롭다운(세션 목록)도 갱신해야 한다(새로고침 없이 보이게).
+          if (ev.session_id && !knownSessions.has(ev.session_id)) { knownSessions.add(ev.session_id); newSession = true; }
+        }
         if (added) { refreshFilterOptions(); render(true); }
+        if (newSession) loadFilterOptions();
       }
       await loadDevices();  // 디바이스 상태도 재동기화
     } catch (_) { /* 일시 오류는 다음 트리거에서 재시도 */ }
