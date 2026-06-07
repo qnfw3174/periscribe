@@ -142,15 +142,17 @@ class IngestSink:
             r2 = self._emit_rows(rows[mid:])
             return r2 or r1
 
-    def beat(self) -> dict[str, Any]:
-        """유휴 하트비트: 빈 events로 호출 → 함수가 devices.last_seen 갱신 + 백필 요청 반환."""
-        return self._post([])
+    def beat(self, catalog: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
+        """유휴 하트비트: 빈 events로 호출 → 함수가 devices.last_seen 갱신 + 백필 요청 반환.
+        catalog(로컬 세션 목록)가 주어지면 함께 보내 서버가 session_catalog를 갱신한다."""
+        return self._post([], catalog)
 
-    def _post(self, rows: list[dict[str, Any]]) -> dict[str, Any]:
-        body = json.dumps(
-            {"device_token": self.token, "machine": self.machine, "events": rows},
-            ensure_ascii=False, default=str,
-        ).encode("utf-8")
+    def _post(self, rows: list[dict[str, Any]],
+              catalog: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"device_token": self.token, "machine": self.machine, "events": rows}
+        if catalog is not None:
+            payload["catalog"] = catalog
+        body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         req = urllib.request.Request(self.url, data=body, method="POST")
         req.add_header("Content-Type", "application/json")
         try:

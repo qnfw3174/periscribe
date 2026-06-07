@@ -142,6 +142,26 @@ Deno.serve(async (req: Request) => {
     body: JSON.stringify(patch),
   });
 
+  // 세션 카탈로그: 컬렉터가 보고한 로컬 세션 목록을 upsert(내용 미적재 세션도 웹 목록에 표시용).
+  const catalog = Array.isArray(body?.catalog) ? body.catalog : [];
+  if (catalog.length > 0) {
+    const now = new Date().toISOString();
+    const crows = catalog
+      .filter((c: any) => c && c.session_id)
+      .map((c: any) => ({
+        owner_id: dev.owner_id, device_id: dev.id, session_id: String(c.session_id),
+        project: c.project ?? null, container_id: c.container_id ?? null,
+        file_mtime: c.mtime ?? null, size_bytes: c.size ?? null, updated_at: now,
+      }));
+    if (crows.length > 0) {
+      await fetch(`${SUPABASE_URL}/rest/v1/session_catalog?on_conflict=device_id,session_id`, {
+        method: "POST",
+        headers: svcHeaders({ "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" }),
+        body: JSON.stringify(crows),
+      });
+    }
+  }
+
   // 백필 요청 픽업: 이 디바이스의 pending 요청을 가져와 done 처리하고 session_id 목록을 반환.
   // 컬렉터는 이 목록의 로컬 transcript 파일을 처음부터 재적재(멱등)한다.
   let backfill: string[] = [];

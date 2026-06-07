@@ -129,6 +129,25 @@ def test_midrun_new_file_read_from_start(tmp_path):
     assert len(got) == 5
 
 
+def test_build_catalog_lists_sessions_excludes_sidechain(tmp_path):
+    proj = tmp_path / "proj-folder"
+    proj.mkdir()
+    make_file(proj / "11111111-1111-1111-1111-111111111111.jsonl", 3)
+    make_file(proj / "22222222-2222-2222-2222-222222222222.jsonl", 1)
+    make_file(proj / "agent-deadbeef.jsonl", 2)  # 사이드체인 → 제외
+    c = make_collector(tmp_path)
+    cat = c._build_catalog()
+    ids = {e["session_id"] for e in cat}
+    assert ids == {"11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"}
+    e0 = cat[0]
+    assert e0["project"] == "proj-folder"
+    assert e0["size"] > 0 and "mtime" in e0
+    # 서명은 내용 변화에만 반응(같은 상태 두 번 호출 시 동일)
+    _, s1 = c._catalog_and_sig()
+    _, s2 = c._catalog_and_sig()
+    assert s1 == s2
+
+
 def test_saved_checkpoint_resumes_from_offset(tmp_path):
     f = make_file(tmp_path / "a.jsonl", 5)
     c = make_collector(tmp_path, backfill=0, checkpoint_data={f: {"offset": 7, "inode": 123}})

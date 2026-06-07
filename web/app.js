@@ -381,36 +381,66 @@
     return seg.length > 20 ? seg.slice(0, 20) + "…" : seg;
   }
   async function loadFilterOptions() {
-    // 세션/머신/컨테이너: DB 전체(sessions 뷰)에서 최신순
-    const { data: sess } = await client.from("sessions").select("*").order("last_received", { ascending: false });
-    if (sess) {
-      const cur = F.session.value;
-      while (F.session.options.length > 1) F.session.remove(1);
-      const machineSet = new Set(), containerSet = new Set();
-      for (const s of sess) {
-        knownSessions.add(s.session_id);
-        if (s.machine_id) machineSet.add(s.machine_id);
-        if (s.container_id) containerSet.add(s.container_id);
-        const o = document.createElement("option");
-        o.value = s.session_id;
-        const proj = s.project ? " · " + shortProject(s.project) : "";
-        const ctr = s.container_id ? " · 🐳" + s.container_id : "";
-        o.textContent = `${String(s.session_id).slice(0, 8)} · ${s.event_count}건${proj}${ctr}`;
-        F.session.appendChild(o);
-      }
-      if ([...F.session.options].some((o) => o.value === cur)) F.session.value = cur;
-      // 머신: 등록된 devices + 세션의 machine_id 합집합
-      for (const d of deviceMap.values()) if (d.machine_id) machineSet.add(d.machine_id);
-      syncSelect(F.machine, machineSet);
-      // 컨테이너: "전체" + "호스트(native)만"(__none__) + 각 container_id
-      if (F.container && containerSet.size) {
-        const cur2 = F.container.value;
-        F.container.length = 0;
-        F.container.appendChild(new Option("전체", ""));
-        F.container.appendChild(new Option("🖥 호스트만", "__none__"));
-        for (const c of Array.from(containerSet).sort()) F.container.appendChild(new Option("🐳 " + c, c));
-        if ([...F.container.options].some((o) => o.value === cur2)) F.container.value = cur2;
-      }
+    // 세션 목록 = session_catalog(로컬 전체 세션, 미적재 포함) ∪ sessions 뷰(적재된 것 건수).
+    // 최근 변경순(file_mtime 또는 last_received)으로 나열. 미적재 세션은 선택 후 백필로 내용 로드.
+    const [sessRes, catRes] = await Promise.all([
+      client.from("sessions").select("*"),
+      client.from("session_catalog").select("session_id,project,container_id,file_mtime"),
+    ]);
+    const sess = sessRes.data || [];
+    const cat = catRes.data || [];
+
+    const ingested = new Map();             // session_id -> sessions 뷰 행
+    const machineSet = new Set(), containerSet = new Set();
+    for (const s of sess) {
+      ingested.set(s.session_id, s);
+      knownSessions.add(s.session_id);
+      if (s.machine_id) machineSet.add(s.machine_id);
+      if (s.container_id) containerSet.add(s.container_id);
+    }
+    const merged = new Map();               // session_id -> 표시 행
+    const add = (sid, project, container_id, count, sortTs) => {
+      const prev = merged.get(sid);
+      const row = { session_id: sid, project, container_id, count, sort: sortTs };
+      if (!prev || row.sort > prev.sort) merged.set(sid, Object.assign(prev || {}, row));
+    };
+    for (const c of cat) {
+      const ing = ingested.get(c.session_id);
+      if (c.container_id) containerSet.add(c.container_id);
+      add(c.session_id, (ing && ing.project) || c.project, (ing && ing.container_id) || c.container_id,
+          ing ? ing.event_count : 0,
+          Date.parse((ing && ing.last_received) || c.file_mtime || 0) || 0);
+    }
+    for (const s of sess) {                 // 카탈로그에 없지만 적재된 세션(현재 진행/레거시)도 포함
+      if (!merged.has(s.session_id))
+        add(s.session_id, s.project, s.container_id, s.event_count, Date.parse(s.last_received || 0) || 0);
+    }
+    const rows = Array.from(merged.values()).sort((a, b) => b.sort - a.sort);  // 최근 변경순
+
+    const cur = F.session.value;
+    while (F.session.options.length > 1) F.session.remove(1);
+    for (const r of rows) {
+      const o = document.createElement("option");
+      o.value = r.session_id;
+      const proj = r.project ? " · " + shortProject(r.project) : "";
+      const ctr = r.container_id ? " · 🐳" + r.container_id : "";
+      const load = r.count > 0 ? `${r.count}건` : "미적재";
+      o.textContent = `${String(r.session_id).slice(0, 8)} · ${load}${proj}${ctr}`;
+      F.session.appendChild(o);
+    }
+    if ([...F.session.options].some((o) => o.value === cur)) F.session.value = cur;
+
+    // 머신: 등록된 devices + 적재 세션의 machine_id 합집합
+    for (const d of deviceMap.values()) if (d.machine_id) machineSet.add(d.machine_id);
+    syncSelect(F.machine, machineSet);
+    // 컨테이너: "전체" + "호스트(native)만"(__none__) + 각 container_id
+    if (F.container && containerSet.size) {
+      const cur2 = F.container.value;
+      F.container.length = 0;
+      F.container.appendChild(new Option("전체", ""));
+      F.container.appendChild(new Option("🖥 호스트만", "__none__"));
+      for (const c of Array.from(containerSet).sort()) F.container.appendChild(new Option("🐳 " + c, c));
+      if ([...F.container.options].some((o) => o.value === cur2)) F.container.value = cur2;
     }
   }
   function syncSelect(sel, values, sliceLabel) {
@@ -628,10 +658,17 @@
     if (!sid) return;
     backfillBtn.dataset.busy = "1";
     backfillBtn.disabled = true; backfillBtn.textContent = "요청 중…";
-    // 이 세션을 적재한 디바이스 찾기(요청을 그 디바이스로 라우팅).
+    // 이 세션을 적재할 디바이스 찾기(요청 라우팅). 적재된 세션은 events에서,
+    // 미적재 세션은 session_catalog에서 device_id를 얻는다.
+    let device_id = null;
     const { data: ev } = await client.from(table).select("device_id")
       .eq("session_id", sid).not("device_id", "is", null).limit(1);
-    const device_id = ev && ev[0] ? ev[0].device_id : null;
+    if (ev && ev[0]) device_id = ev[0].device_id;
+    if (!device_id) {
+      const { data: c } = await client.from("session_catalog").select("device_id")
+        .eq("session_id", sid).limit(1);
+      if (c && c[0]) device_id = c[0].device_id;
+    }
     if (!device_id) {
       backfillBtn.disabled = false; delete backfillBtn.dataset.busy;
       backfillBtn.textContent = "수집 디바이스를 못 찾음";
@@ -976,9 +1013,20 @@
     const ok = await ensureEncUnlocked(); // 키 셋업/잠금해제(취소 시 게이트 유지)
     if (!ok) { appStarted = false; return; }
     subscribeDevices();
+    subscribeCatalog();                   // 새 세션이 카탈로그에 들어오면 목록 갱신
     loadFilterOptions();                  // DB 전체 세션/머신으로 드롭다운 채움
     await loadHistory();
     subscribe();
+  }
+  // 세션 카탈로그 변경(신규/수정) → 세션 드롭다운 갱신(디바운스).
+  let catChannel = null, catDebounce = null;
+  function subscribeCatalog() {
+    if (catChannel) { try { client.removeChannel(catChannel); } catch (_) {} catChannel = null; }
+    catChannel = client.channel("periscribe-catalog")
+      .on("postgres_changes", { event: "*", schema: "public", table: "session_catalog" }, () => {
+        clearTimeout(catDebounce);
+        catDebounce = setTimeout(loadFilterOptions, 800);
+      }).subscribe();
   }
   function showAuthed(session) {
     document.body.classList.add("authed");

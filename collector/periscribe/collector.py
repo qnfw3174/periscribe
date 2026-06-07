@@ -14,6 +14,7 @@ import secrets
 import signal
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,8 @@ class Collector:
         # E2EE: 암호화 적재 필수 여부(설정 on + sink가 DEK를 지원할 때). StdoutSink(dry-run)는 제외.
         self._enc_required = config.encrypt and hasattr(sink, "has_dek")
         self._enc_hold_logged = False
+        # 세션 카탈로그: 마지막으로 보낸 목록 서명(변경 시에만 재전송).
+        self._last_catalog_sig: int | None = None
 
         # 관측: 최근 오류를 하트비트에 실어 보낸다(웹에서 머신별 표시).
         self._last_error = ""
@@ -217,6 +220,32 @@ class Collector:
                 except OSError:
                     pass
 
+    # ---- 세션 카탈로그(로컬에 존재하는 세션 목록) ----
+    def _build_catalog(self) -> list[dict[str, Any]]:
+        """watch 대상의 메인 세션 파일 목록(내용 미적재 포함). 사이드체인(agent-*)은 제외."""
+        out: list[dict[str, Any]] = []
+        for f in self.discover():
+            p = Path(f)
+            if p.stem.startswith("agent-"):
+                continue
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            out.append({
+                "session_id": p.stem,
+                "project": self._project_folder(f),
+                "container_id": self._container_id_for(f),
+                "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                "size": st.st_size,
+            })
+        return out
+
+    def _catalog_and_sig(self) -> tuple[list[dict[str, Any]], int]:
+        cat = self._build_catalog()
+        sig = hash(tuple((c["session_id"], c["mtime"], c["size"]) for c in cat))
+        return cat, sig
+
     # ---- 하트비트 ----
     def _maybe_heartbeat(self) -> dict[str, Any] | None:
         if not self._heartbeat_enabled:
@@ -224,9 +253,13 @@ class Collector:
         now = time.time()
         if now - self._last_beat < self.config.heartbeat_interval:
             return None
+        cat, sig = self._catalog_and_sig()
+        send_cat = cat if sig != self._last_catalog_sig else None  # 변경됐을 때만 전송
         try:
-            resp = self.sink.beat()  # 빈 ingest → 함수가 last_seen 갱신 + 백필 요청 반환
+            resp = self.sink.beat(send_cat)  # 빈 ingest → last_seen 갱신 + 백필 요청 + (변경 시) 카탈로그
             self._last_beat = now
+            if send_cat is not None:
+                self._last_catalog_sig = sig  # 성공 후에만 갱신(실패 시 다음에 재전송)
             return resp
         except SinkAuthError:
             raise  # 상위 루프에서 백오프/종료 처리

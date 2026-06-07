@@ -178,6 +178,36 @@ create policy ok_rw on public.owner_keys
   for all to authenticated using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 
 -- =====================================================================
+-- 2d. session_catalog — 컬렉터가 보고하는 "로컬에 존재하는 세션 목록"(내용 미적재 포함).
+--    웹이 전체 과거 세션을 최근변경순으로 나열하고, 선택 시 백필로 내용을 끌어오게 함.
+--    컬렉터가 하트비트에 catalog를 실어 보내면 ingest가 owner/device 스탬프해 upsert.
+-- =====================================================================
+create table if not exists public.session_catalog (
+  owner_id     uuid not null references auth.users(id) on delete cascade,
+  device_id    uuid not null references public.devices(id) on delete cascade,
+  session_id   text not null,
+  project      text,
+  container_id text,
+  file_mtime   timestamptz,                  -- transcript 파일 최종 변경시각(목록 정렬 기준)
+  size_bytes   bigint,
+  updated_at   timestamptz not null default now(),
+  primary key (device_id, session_id)
+);
+create index if not exists session_catalog_owner_mtime_idx
+  on public.session_catalog(owner_id, file_mtime desc);
+
+alter table public.session_catalog enable row level security;
+drop policy if exists sc_read on public.session_catalog;
+create policy sc_read on public.session_catalog
+  for select to authenticated using (owner_id = auth.uid());
+
+do $$ begin
+  if not exists (select 1 from pg_publication_tables where pubname='supabase_realtime' and tablename='session_catalog') then
+    alter publication supabase_realtime add table public.session_catalog;
+  end if;
+end $$;
+
+-- =====================================================================
 -- 3. sessions 뷰 — 필터 드롭다운(세션/머신)을 DB 전체에서 채움.
 --    security_invoker=true 로 events RLS(owner 스코핑)를 상속 → 자동 격리.
 -- =====================================================================
