@@ -264,7 +264,7 @@ sequenceDiagram
   loop
     COL2-&gt;&gt;DB: 새 events (device_id=R1 · kid=새 kid)
   end
-  Note over WEB,DB: 옛 이벤트→dek_keys[옛 kid] · 새 이벤트→dek_keys[새 kid]&lt;br/&gt;관리 목록 디바이스 1개(연속) ✅ · revoked guid는 차단
+  Note over WEB,DB: 옛 이벤트→dek_keys[옛 kid] · 새 이벤트→dek_keys[새 kid]&lt;br/&gt;관리 목록 디바이스 1개(연속) ✅ · 관리자 revoke만 차단(제거됨은 되살림)
   </pre></div>
 
   <h2>4. 디바이스 수명주기 상태도</h2>
@@ -284,9 +284,10 @@ stateDiagram-v2
   online --&gt; removed: uninstall 신호
   stale --&gt; removed: uninstall 신호
   online --&gt; online: 재설치(같은 machine_guid)→같은 행 자동 연결
+  removed --&gt; online: 재설치 → 되살림(사용자 제거는 차단 안 함)
   revoked --&gt; [*]: 완전 삭제(⚠복호 손실)
   removed --&gt; [*]: 완전 삭제
-  note right of revoked: revoked/제거됨 guid는 재설치해도 차단
+  note right of revoked: 관리자 revoke만 차단(제거됨은 되살림)
   </pre></div>
 
   <h2>5. 데이터 모델 (ER)</h2>

@@ -45,22 +45,24 @@ Deno.serve(async (req: Request) => {
   let dev = tokenDev;
   if (mguid) {
     const cResp = await fetch(
-      `${SUPABASE_URL}/rest/v1/devices?select=id,owner_id,revoked,dek_keys&owner_id=eq.${tokenDev.owner_id}&machine_guid=eq.${encodeURIComponent(mguid)}&limit=1`,
+      `${SUPABASE_URL}/rest/v1/devices?select=id,owner_id,revoked,uninstalled_at,dek_keys&owner_id=eq.${tokenDev.owner_id}&machine_guid=eq.${encodeURIComponent(mguid)}&limit=1`,
       { headers: svcHeaders() },
     );
     const crows = cResp.ok ? await cResp.json() : [];
     const existing = Array.isArray(crows) ? crows[0] : null;
     if (existing && existing.id !== tokenDev.id) {
-      // revoke된 머신은 재설치해도 되살리지 않음(의도적 차단 유지).
-      if (existing.revoked) return json({ error: "revoked token" }, 401);
-      // 갓 발급된 토큰행 삭제 후, 기존 행에 새 토큰을 연결(uninstalled 표시 해제).
+      // 관리자 revoke(수동 차단, uninstalled_at 없음)는 유지. 사용자 uninstall(uninstalled_at 있음)은
+      // 실수로 제거파일을 썼더라도 재설치 시 같은 디바이스로 되살린다.
+      if (existing.revoked && !existing.uninstalled_at) return json({ error: "revoked token" }, 401);
+      // 갓 발급된 토큰행 삭제 후, 기존 행에 새 토큰 연결 + 제거/차단 표시 해제(되살림).
       await fetch(`${SUPABASE_URL}/rest/v1/devices?id=eq.${tokenDev.id}`,
         { method: "DELETE", headers: svcHeaders({ Prefer: "return=minimal" }) });
       await fetch(`${SUPABASE_URL}/rest/v1/devices?id=eq.${existing.id}`, {
         method: "PATCH",
         headers: svcHeaders({ "Content-Type": "application/json", Prefer: "return=minimal" }),
-        body: JSON.stringify({ token_hash: hash, uninstalled_at: null }),
+        body: JSON.stringify({ token_hash: hash, uninstalled_at: null, revoked: false }),
       });
+      existing.revoked = false;   // 아래 revoked 체크가 막지 않도록 로컬 상태도 갱신
       dev = existing;
     } else if (tokenDev.machine_guid !== mguid) {
       // 최초 바인딩: 토큰행에 machine_guid 기록.

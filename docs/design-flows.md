@@ -282,7 +282,7 @@ sequenceDiagram
   loop
     COL2->>DB: 새 events (device_id=R1 · envelope.kid=새 kid)
   end
-  Note over WEB,DB: 옛 이벤트(옛 kid)→dek_keys[옛 kid] 복호<br/>새 이벤트(새 kid)→dek_keys[새 kid] 복호<br/>관리 목록엔 디바이스 1개(연속) ✅ · revoke된 guid는 재설치해도 차단
+  Note over WEB,DB: 옛 이벤트(옛 kid)→dek_keys[옛 kid] 복호<br/>새 이벤트(새 kid)→dek_keys[새 kid] 복호<br/>관리 목록엔 디바이스 1개(연속) ✅ · 관리자 revoke만 차단(제거됨=uninstall은 되살림)
 ```
 
 식별자: `machine_guid` = Windows 레지스트리 **MachineGuid**(설치마다 고유, 앱 재설치에도 유지, 폴백 hostname).
@@ -309,9 +309,10 @@ stateDiagram-v2
   online --> removed: uninstall 신호
   stale --> removed: uninstall 신호
   online --> online: 재설치(같은 machine_guid) → 같은 행 자동 연결
+  removed --> online: 재설치 → 되살림(사용자 제거는 차단 안 함)
   revoked --> [*]: 완전 삭제(행 제거 · ⚠복호 손실)
   removed --> [*]: 완전 삭제
-  note right of revoked: revoked/제거됨 guid는<br/>재설치해도 차단(되살리지 않음)
+  note right of revoked: 관리자 revoke만 재설치 차단<br/>(제거됨=uninstall은 실수 대비 되살림)
 ```
 
 ---
