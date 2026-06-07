@@ -375,6 +375,16 @@
   }
 
   const knownSessions = new Set();
+  // 세션 목록의 최근 수정시간 표기. 오늘이면 HH:mm, 아니면 MM-DD HH:mm.
+  function fmtListTime(ms) {
+    const d = new Date(ms);
+    if (isNaN(d)) return "";
+    const p2 = (n) => String(n).padStart(2, "0");
+    const hm = `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+    const now = new Date();
+    const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    return sameDay ? hm : `${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${hm}`;
+  }
   function shortProject(p) {
     if (!p) return "";
     const seg = String(p).split(/[\/\\]/).filter(Boolean).pop() || p;
@@ -425,7 +435,8 @@
       const proj = r.project ? " · " + shortProject(r.project) : "";
       const ctr = r.container_id ? " · 🐳" + r.container_id : "";
       const load = r.count > 0 ? `${r.count}건` : "미적재";
-      o.textContent = `${String(r.session_id).slice(0, 8)} · ${load}${proj}${ctr}`;
+      const when = r.sort ? " · " + fmtListTime(r.sort) : "";   // 최근 수정시간
+      o.textContent = `${String(r.session_id).slice(0, 8)} · ${load}${when}${proj}${ctr}`;
       F.session.appendChild(o);
     }
     if ([...F.session.options].some((o) => o.value === cur)) F.session.value = cur;
@@ -458,7 +469,7 @@
   }
 
   function countText(shown) {
-    const totalStr = dbTotal != null ? ` · DB ${dbTotal}건` : "";
+    const totalStr = dbTotal != null ? ` · DB ~${dbTotal}건` : "";
     return `로드 ${store.size}건 중 ${shown}개 표시${totalStr}`;
   }
 
@@ -469,12 +480,14 @@
     if (list.length === 0) {
       feedEl.appendChild(emptyEl);
       emptyEl.textContent = store.size === 0 ? "이벤트 없음. Collector 가 도는지 확인하세요." : "필터에 맞는 이벤트 없음.";
+      lastShown = 0;
       countEl.textContent = countText(0);
       return;
     }
     const frag = document.createDocumentFragment();
     for (const ev of list) frag.appendChild(eventNode(ev));
     feedEl.appendChild(frag);
+    lastShown = list.length;
     countEl.textContent = countText(list.length);
     if (scrollBottom) window.scrollTo(0, document.body.scrollHeight);
   }
@@ -491,7 +504,8 @@
   // 복합 키셋 커서 (received_at, event_id): received_at 동률이 있어도 누락/중복 없음.
   let curRecv = null, curId = null;
   let reachedEnd = false;    // 더 불러올 과거가 없음
-  let dbTotal = null;        // DB 총 건수(표시용)
+  let dbTotal = null;        // DB 총 건수(추정치, 표시용)
+  let lastShown = 0;         // 마지막 render에서 표시한 건수(비차단 count 갱신용)
 
   // 현재 서버측 필터를 적용한 기본 쿼리(최근순, pageSize 제한). received_at 동률은 event_id로 안정 정렬.
   function applyServerFilters(q) {
@@ -545,10 +559,9 @@
   async function loadHistory() {
     setConn("off", "과거 로드 중…");
     curRecv = null; curId = null; reachedEnd = false; store.clear();
-    // DB 건수(머리 count, 현재 서버 필터 반영) — UI 로드분과 비교용
-    const cnt = await applyServerFilters(client.from(table).select("*", { count: "exact", head: true }));
-    dbTotal = (cnt && typeof cnt.count === "number") ? cnt.count : null;
+    dbTotal = null;
 
+    // 1) 최근 pageSize(200)개만 먼저 가져와 즉시 표시(전체 count를 기다리지 않음).
     const { data, error } = await baseQuery();
     if (error) {
       setConn("err", "조회 오류: " + error.message);
@@ -562,6 +575,15 @@
     updateLoadMore();
     updateBackfill();
     setConn("on", "실시간 구독 중");
+
+    // 2) DB 총건수는 비차단 + 추정치(전체 풀스캔 회피). 도착하면 카운트 라벨만 갱신.
+    applyServerFilters(client.from(table).select("*", { count: "estimated", head: true }))
+      .then((cnt) => {
+        if (cnt && typeof cnt.count === "number") {
+          dbTotal = cnt.count;
+          countEl.textContent = countText(lastShown);
+        }
+      }).catch(() => {});
   }
 
   async function loadMore() {
