@@ -47,6 +47,28 @@ periscribe-agent <작업폴더> --name <box-id>
 - 빌드: `packaging/build.ps1` → `periscribe-agent.exe`(컬렉터 `periscribe.exe`와 별도 console exe).
   개념·라이선스·런타임 대안은 [DOCKER-CONCEPTS.md](DOCKER-CONCEPTS.md).
 
+### 컨테이너 정책 파일 (에이전트 능력 제어 — 인프라 강제)
+컨테이너 안 에이전트가 무엇을 할 수 있는지를 **호스트의 정책 JSON 파일**로 제어한다. 런처가 이 파일을
+읽어 `docker run` 플래그로 변환하므로 **커널/Docker가 강제**한다 — Claude의 권한 기능과 무관하고
+에이전트가 못 끈다. **파일만 편집하면 다음 실행부터 적용(코드 수정·재빌드 불필요).**
+- 위치: `%LOCALAPPDATA%\Periscribe\policies\<name>.json` (없으면 기본 템플릿 자동 생성) 또는 `--policy <경로>`.
+- `--no-policy` 로 정책 미적용(기본 격리만).
+
+| 키 | 기본 | 효과(docker) |
+|---|---|---|
+| `workspace_writable` | true | false → 워크스페이스 읽기전용 마운트(**코드 파일 수정 차단**) |
+| `network` | true | false → `--network=none`(외부 차단). ⚠ Claude는 API/로그인 필요 → `--shell` 점검용 |
+| `no_new_privileges` | false | true → `--security-opt=no-new-privileges`(권한 상승 차단) |
+| `read_only_rootfs` | false | true → 루트FS 읽기전용(+`/tmp` tmpfs). 실험적 |
+| `drop_all_capabilities` | true | base에서 항상 `--cap-drop=ALL`; false면 완화 |
+| `memory`/`cpus`/`pids` | null | `--memory`/`--cpus`/`--pids-limit` 리소스 제한 |
+
+예) "코드 읽되 수정 금지":
+```json
+{ "workspace_writable": false, "no_new_privileges": true }
+```
+잘못된 값/미지 키는 경고만 남기고 허용적 기본값으로 진행한다(launch 안 막힘).
+
 ## 호스트 Collector 설정
 호스트 Collector가 컨테이너 루트도 보게 한다:
 - `config.json`에 `"container_root": "%USERPROFILE%\\periscribe-agents"` (또는 절대경로),

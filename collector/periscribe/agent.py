@@ -34,6 +34,29 @@ RUN mkdir -p /home/node/.claude/projects
 WORKDIR /workspace
 """
 
+# 컨테이너(인프라) 레벨 정책 템플릿. 호스트의 이 JSON 을 편집하면 다음 실행부터 적용된다(재빌드 불필요).
+# periscribe-agent 가 읽어 docker run 플래그로 변환한다 — Claude Code 설정과 무관(에이전트가 못 끄는 계층).
+# 기본값은 현행 동작과 동일(제약 없음 + base 격리).
+POLICY_TEMPLATE = """{
+  "version": 1,
+  "workspace_writable": true,
+  "network": true,
+  "drop_all_capabilities": true,
+  "no_new_privileges": false,
+  "read_only_rootfs": false,
+  "memory": null,
+  "cpus": null,
+  "pids": null
+}
+"""
+
+_KNOWN_POLICY_KEYS = {
+    "version", "workspace_writable", "network", "drop_all_capabilities",
+    "no_new_privileges", "read_only_rootfs", "memory", "cpus", "pids",
+}
+_MEM_RE = re.compile(r"^\d+(\.\d+)?[bkmgBKMG]?$")
+_CPU_RE = re.compile(r"^\d+(\.\d+)?$")
+
 # MVP는 docker. podman 은 PATH 에 있으면 자동 폴백(향후 확장 지점).
 _RUNTIMES = ("docker", "podman")
 
@@ -94,6 +117,113 @@ def _sanitize_name(raw: str) -> str:
     return s or "agent"
 
 
+# ---- 컨테이너 레벨 정책 ----
+def _policies_dir() -> Path:
+    return _data_dir() / "policies"
+
+
+def _resolve_policy_file(name: str, policy_arg: str) -> Path:
+    """적용할 정책 파일. --policy 경로가 있으면 그 파일, 없으면 박스별
+    <data>/policies/<name>.json(없으면 기본 템플릿 생성). 둘 다 호스트라 재빌드 없이 편집 적용."""
+    if policy_arg:
+        p = Path(policy_arg).expanduser()
+        if not p.is_file():
+            raise FileNotFoundError(str(p))
+        return p
+    pdir = _policies_dir()
+    pdir.mkdir(parents=True, exist_ok=True)
+    f = pdir / f"{name}.json"
+    if not f.exists():
+        f.write_text(POLICY_TEMPLATE, encoding="utf-8")
+    return f
+
+
+def _policy_to_run_args(policy: object, running_claude: bool) -> tuple[bool, list[str], list[str]]:
+    """컨테이너 정책 → (워크스페이스 읽기전용?, 추가 docker 플래그, 경고들).
+    잘못/누락 키는 launch 를 막지 않고 허용적 기본값으로 폴백하며 경고만 남긴다."""
+    warnings: list[str] = []
+    args: list[str] = []
+    if not isinstance(policy, dict):
+        return False, [], ["정책이 JSON 객체가 아니라 무시함(제약 없음)."]
+
+    def _flag(key: str, default: bool) -> bool:
+        v = policy.get(key, default)
+        if isinstance(v, bool):
+            return v
+        if key in policy:
+            warnings.append(f"'{key}'는 true/false 여야 함(받음: {v!r}) → 기본값 {default} 사용.")
+        return default
+
+    if policy.get("version", 1) != 1:
+        warnings.append(f"알 수 없는 정책 version={policy.get('version')!r} — 그대로 진행.")
+
+    ws_readonly = not _flag("workspace_writable", True)
+
+    if not _flag("network", True):
+        args.append("--network=none")
+        if running_claude:
+            warnings.append("network:false — 네트워크가 없어 Claude 로그인/API 호출이 실패합니다. "
+                            "Claude를 쓰려면 network:true, 오프라인 점검만 하려면 --shell 사용.")
+
+    if not _flag("drop_all_capabilities", True):
+        args.append("--cap-add=ALL")
+        warnings.append("drop_all_capabilities:false — 모든 capability 부여(샌드박스 약화).")
+
+    if _flag("no_new_privileges", False):
+        args.append("--security-opt=no-new-privileges:true")
+
+    if _flag("read_only_rootfs", False):
+        args += ["--read-only", "--tmpfs=/tmp"]
+        warnings.append("read_only_rootfs:true — 실험적. 일부 도구가 쓰기 경로를 못 찾아 실패할 수 있음.")
+
+    mem = policy.get("memory")
+    if mem not in (None, ""):
+        if isinstance(mem, str) and _MEM_RE.match(mem):
+            args.append(f"--memory={mem}")
+        else:
+            warnings.append(f'memory={mem!r} 형식 오류(예: "2g") → 무시.')
+
+    cpus = policy.get("cpus")
+    if cpus not in (None, ""):
+        if (isinstance(cpus, (int, float)) and not isinstance(cpus, bool)) or \
+           (isinstance(cpus, str) and _CPU_RE.match(cpus)):
+            args.append(f"--cpus={cpus}")
+        else:
+            warnings.append(f'cpus={cpus!r} 형식 오류(예: "2") → 무시.')
+
+    pids = policy.get("pids")
+    if pids not in (None, ""):
+        if isinstance(pids, int) and not isinstance(pids, bool) and pids > 0:
+            args.append(f"--pids-limit={pids}")
+        else:
+            warnings.append(f"pids={pids!r} 는 양의 정수여야 함 → 무시.")
+
+    for k in policy:
+        if k not in _KNOWN_POLICY_KEYS:
+            warnings.append(f"알 수 없는 정책 키 '{k}' → 무시.")
+
+    return ws_readonly, args, warnings
+
+
+def _active_controls(ws_readonly: bool, args: list[str]) -> list[str]:
+    """콘솔 배너용 — 활성 제어를 사람이 읽을 라벨로."""
+    labels: list[str] = []
+    if ws_readonly:
+        labels.append("워크스페이스 읽기전용🔒")
+    fixed = {"--network=none": "네트워크 차단", "--read-only": "루트FS 읽기전용",
+             "--security-opt=no-new-privileges:true": "권한상승 차단", "--cap-add=ALL": "⚠모든 capability"}
+    for arg in args:
+        if arg in fixed:
+            labels.append(fixed[arg])
+        elif arg.startswith("--memory="):
+            labels.append("메모리 " + arg.split("=", 1)[1])
+        elif arg.startswith("--cpus="):
+            labels.append("CPU " + arg.split("=", 1)[1])
+        elif arg.startswith("--pids-limit="):
+            labels.append("PID " + arg.split("=", 1)[1])
+    return labels
+
+
 def _write_build_context() -> Path:
     ctx = _data_dir() / "agent-build"
     ctx.mkdir(parents=True, exist_ok=True)
@@ -117,14 +247,14 @@ def _collector_running() -> bool:
 
 
 def _docker_run_argv(runtime: str, name: str, workspace: Path, claude_dir: Path,
-                     suffix: list[str], tty: bool, read_only: bool = False,
+                     suffix: list[str], tty: bool, ws_readonly: bool = False,
                      extra: list[str] | None = None) -> list[str]:
     """devcontainer 와 동일한 마운트/격리로 run 인자 조립.
     Windows 경로의 드라이브 콜론이 `-v src:dst` 파싱과 충돌하므로 `--mount` 사용.
-    read_only=True 면 워크스페이스를 OS 레벨 읽기전용으로 마운트(에이전트가 코드 수정 못 함).
-    .claude 바인드는 transcript/로그인 영속을 위해 쓰기 유지."""
+    ws_readonly=True 면 워크스페이스를 OS 레벨 읽기전용으로(정책 workspace_writable:false 구동).
+    .claude 바인드는 transcript/로그인 영속을 위해 항상 쓰기 유지. extra=정책이 만든 추가 플래그."""
     ws_mount = f"type=bind,source={workspace},target=/workspace"
-    if read_only:
+    if ws_readonly:
         ws_mount += ",readonly"
     return [
         runtime, "run", "--rm", "-i", *(["-t"] if tty else []),
@@ -150,8 +280,11 @@ def cmd_agent(argv: list[str]) -> int:
     p.add_argument("--name", default="",
                    help="박스 이름 = container_id(웹 🐳 표시). 기본: 작업 폴더명")
     p.add_argument("--shell", action="store_true", help="claude 대신 bash 셸로 진입")
-    p.add_argument("--read-only", "--ro", dest="read_only", action="store_true",
-                   help="워크스페이스를 읽기전용으로 마운트 — 에이전트가 코드 파일을 수정 못 함(OS 강제)")
+    p.add_argument("--policy", default="",
+                   help="컨테이너(OS) 레벨 제어 정책 JSON 파일 경로. 생략 시 박스별 정책 파일을 "
+                        "자동 생성/사용(편집해서 적용, 재빌드 불필요)")
+    p.add_argument("--no-policy", action="store_true",
+                   help="정책 미적용 — 기본 격리만으로 실행")
     p.add_argument("--api-key", default="",
                    help="ANTHROPIC_API_KEY 주입(생략 시 컨테이너 안에서 /login 으로 인증)")
     p.add_argument("--rebuild", action="store_true", help="에이전트 이미지를 강제로 다시 빌드")
@@ -185,6 +318,23 @@ def cmd_agent(argv: list[str]) -> int:
         print("[agent] ⚠ 컬렉터가 감지되지 않습니다 — 세션을 웹에서 보려면 "
               "periscribe 컬렉터가 실행 중이어야 합니다(설치/로그인).", file=sys.stderr)
 
+    # 컨테이너 레벨 정책 → docker 플래그.
+    ws_readonly, policy_args, policy_warnings = False, [], []
+    policy_file: Path | None = None
+    if not a.no_policy:
+        try:
+            policy_file = _resolve_policy_file(name, a.policy)
+        except FileNotFoundError as e:
+            print(f"[agent] 정책 파일을 찾을 수 없습니다: {e}", file=sys.stderr)
+            return 2
+        try:
+            pol = json.loads(policy_file.read_text(encoding="utf-8-sig"))
+        except Exception as e:  # noqa: BLE001
+            print(f"[agent] 정책 파일 JSON 오류 ({policy_file}): {e}", file=sys.stderr)
+            return 2
+        ws_readonly, policy_args, policy_warnings = _policy_to_run_args(
+            pol, running_claude=not a.shell)
+
     if a.rebuild or not _image_exists(runtime):
         print(f"[agent] 이미지 빌드 중 ({AGENT_IMAGE}) — 최초 1회, 수 분 소요…")
         bargs = [runtime, "build", "-t", AGENT_IMAGE]
@@ -197,21 +347,26 @@ def cmd_agent(argv: list[str]) -> int:
             return rc
 
     suffix = ["bash"] if a.shell else ["claude"]
-    extra: list[str] = ["-e", f"ANTHROPIC_API_KEY={a.api_key}"] if a.api_key else []
+    extra: list[str] = (["-e", f"ANTHROPIC_API_KEY={a.api_key}"] if a.api_key else []) + policy_args
     tty = sys.stdin.isatty() and sys.stdout.isatty()
 
-    ro = "  [읽기전용 🔒]" if a.read_only else ""
-    print(f"[agent] 박스 '{name}' 시작 — workspace = {workspace}{ro}")
+    print(f"[agent] 박스 '{name}' 시작 — workspace = {workspace}")
     print(f"[agent]   transcript → {claude_dir}  (웹에서 🐳{name})")
-    if a.read_only:
-        print("[agent]   워크스페이스 읽기전용 — 에이전트가 코드 파일을 수정할 수 없습니다(OS 강제).")
+    if policy_file:
+        controls = _active_controls(ws_readonly, policy_args)
+        print(f"[agent]   컨테이너 정책: {', '.join(controls) if controls else '기본(제약 없음)'}")
+        print(f"[agent]     [{policy_file}] — 편집해 제어(예: workspace_writable:false). 다음 실행부터 적용(재빌드 불필요).")
+    else:
+        print("[agent]   컨테이너 정책: 미적용(--no-policy) — 기본 격리만")
+    for w in policy_warnings:
+        print(f"[agent]   ⚠ {w}", file=sys.stderr)
     if not a.shell and not a.api_key:
         print("[agent]   첫 실행이면 컨테이너 안에서 /login 으로 한 번 인증하세요(이후 자동 유지).")
     print("[agent]   종료: 컨테이너에서 exit / Ctrl-D")
 
     return subprocess.call(
         _docker_run_argv(runtime, name, workspace, claude_dir, suffix, tty,
-                         read_only=a.read_only, extra=extra))
+                         ws_readonly=ws_readonly, extra=extra))
 
 
 def _make_output_safe() -> None:

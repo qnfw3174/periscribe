@@ -142,7 +142,8 @@ flowchart TD
     <tr><td><code>--cap-drop=ALL</code></td><td>컨테이너 프로세스의 리눅스 capability 전부 제거(권한 최소화).</td></tr>
     <tr><td><code>container_root</code></td><td>Collector가 "컨테이너 세션"으로 watch하는 루트(<code>%USERPROFILE%\periscribe-agents</code>). 그 아래 <b>첫 경로 세그먼트 = container_id</b>(웹 🐳 라벨).</td></tr>
   </table>
-  <div class="note">⚠ 격리의 결: 이 구조는 <b>파일시스템 + capability</b> 수준. 컨테이너는 호스트와 <b>같은 커널</b>을 공유 → 커널 익스플로잇까지 막으려면 microVM(예: Firecracker). 네트워크/egress 차단은 범위 밖(인프라 계층에 둬야 강제 가능). 상세 <a href="CONTAINERS.md">CONTAINERS.md</a>.</div>
+  <div class="key">에이전트 능력 제어: 호스트 정책 JSON(<code>%LOCALAPPDATA%\Periscribe\policies\&lt;name&gt;.json</code>) → <code>docker run</code> 플래그로 변환되어 <b>커널/Docker가 강제</b>(Claude 권한 기능과 무관, 에이전트가 못 끔, 재빌드 불필요). 예: <code>workspace_writable:false</code>(코드 수정 차단)·<code>network:false</code>(외부 차단)·<code>no_new_privileges</code>·리소스 제한. 키 표는 <a href="CONTAINERS.md">CONTAINERS.md</a> "컨테이너 정책 파일".</div>
+  <div class="note">⚠ 격리의 결: 이 구조는 <b>파일시스템 + capability + 네트워크/리소스(정책)</b> 수준. 컨테이너는 호스트와 <b>같은 커널</b>을 공유 → 커널 익스플로잇까지 막으려면 microVM(예: Firecracker). allowlist 기반 egress 프록시는 후속.</div>
 
   <p class="cap" style="margin-top:24px">관련 문서: <a href="DOCKER-CONCEPTS.md">DOCKER-CONCEPTS.md</a>(원본) · <a href="CONTAINERS.md">CONTAINERS.md</a>(실무 절차) · <a href="DEPLOY.md">DEPLOY.md</a> · <a href="E2EE-DESIGN.md">E2EE-DESIGN.md</a> · <a href="design-flows.html">design-flows.html</a></p>
 </div>

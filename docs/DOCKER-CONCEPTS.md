@@ -143,12 +143,20 @@ periscribe-agent ─┘        (진짜 관리자)     ↑ 대시보드는 이걸
 
 ---
 
-## 7. 한계 (격리의 결)
+## 7. 에이전트 능력 제어 — 인프라 계층에서
 
-- 이 구조의 격리는 **파일시스템 + capability** 수준이다. 컨테이너는 호스트와 **같은 커널**을 공유하므로
-  커널 익스플로잇까지 막으려면 microVM(예: Firecracker)이 필요하다.
-- 네트워크/egress 차단은 이번 범위 밖 — denylist 한 겹은 우회될 수 있고, 진짜 강제는 에이전트가
-  못 끄는 인프라 계층(네트워크 정책)에 둬야 한다. 자세히는 [CONTAINERS.md](CONTAINERS.md) §한계.
+`periscribe-agent`는 호스트의 **정책 JSON 파일**(`%LOCALAPPDATA%\Periscribe\policies\<name>.json`)을
+읽어 `docker run` 플래그로 변환한다. 즉 제어가 **Claude의 권한 기능이 아니라 커널/Docker로 강제**되어
+에이전트가 못 끈다(코드 수정·재빌드 없이 파일만 편집). 예: `workspace_writable:false`→코드 수정 차단,
+`network:false`→외부 차단, `no_new_privileges`/리소스 제한. 키 표·예시는 [CONTAINERS.md](CONTAINERS.md)
+"컨테이너 정책 파일".
+
+## 8. 한계 (격리의 결)
+
+- 이 구조의 격리는 **파일시스템 + capability + 네트워크/리소스(정책 파일)** 수준이다. 컨테이너는 호스트와
+  **같은 커널**을 공유하므로 커널 익스플로잇까지 막으려면 microVM(예: Firecracker)이 필요하다.
+- `network:false`는 외부를 통째로 끊는다(allowlist 기반 egress 프록시는 후속). denylist 한 겹은
+  우회될 수 있으니 진짜 강제는 에이전트가 못 끄는 계층(위 정책 파일·네트워크 정책)에 둔다.
 
 ---
 
