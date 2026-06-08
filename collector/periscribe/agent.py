@@ -117,16 +117,22 @@ def _collector_running() -> bool:
 
 
 def _docker_run_argv(runtime: str, name: str, workspace: Path, claude_dir: Path,
-                     suffix: list[str], tty: bool, extra: list[str] | None = None) -> list[str]:
+                     suffix: list[str], tty: bool, read_only: bool = False,
+                     extra: list[str] | None = None) -> list[str]:
     """devcontainer 와 동일한 마운트/격리로 run 인자 조립.
-    Windows 경로의 드라이브 콜론이 `-v src:dst` 파싱과 충돌하므로 `--mount` 사용."""
+    Windows 경로의 드라이브 콜론이 `-v src:dst` 파싱과 충돌하므로 `--mount` 사용.
+    read_only=True 면 워크스페이스를 OS 레벨 읽기전용으로 마운트(에이전트가 코드 수정 못 함).
+    .claude 바인드는 transcript/로그인 영속을 위해 쓰기 유지."""
+    ws_mount = f"type=bind,source={workspace},target=/workspace"
+    if read_only:
+        ws_mount += ",readonly"
     return [
         runtime, "run", "--rm", "-i", *(["-t"] if tty else []),
         "--name", f"periscribe-{name}",
         "-u", "node",
         "-w", "/workspace",
         "--cap-drop=ALL",
-        "--mount", f"type=bind,source={workspace},target=/workspace",
+        "--mount", ws_mount,
         "--mount", f"type=bind,source={claude_dir},target=/home/node/.claude",
         *(extra or []),
         AGENT_IMAGE,
@@ -144,6 +150,8 @@ def cmd_agent(argv: list[str]) -> int:
     p.add_argument("--name", default="",
                    help="박스 이름 = container_id(웹 🐳 표시). 기본: 작업 폴더명")
     p.add_argument("--shell", action="store_true", help="claude 대신 bash 셸로 진입")
+    p.add_argument("--read-only", "--ro", dest="read_only", action="store_true",
+                   help="워크스페이스를 읽기전용으로 마운트 — 에이전트가 코드 파일을 수정 못 함(OS 강제)")
     p.add_argument("--api-key", default="",
                    help="ANTHROPIC_API_KEY 주입(생략 시 컨테이너 안에서 /login 으로 인증)")
     p.add_argument("--rebuild", action="store_true", help="에이전트 이미지를 강제로 다시 빌드")
@@ -192,14 +200,18 @@ def cmd_agent(argv: list[str]) -> int:
     extra: list[str] = ["-e", f"ANTHROPIC_API_KEY={a.api_key}"] if a.api_key else []
     tty = sys.stdin.isatty() and sys.stdout.isatty()
 
-    print(f"[agent] 박스 '{name}' 시작 — workspace = {workspace}")
+    ro = "  [읽기전용 🔒]" if a.read_only else ""
+    print(f"[agent] 박스 '{name}' 시작 — workspace = {workspace}{ro}")
     print(f"[agent]   transcript → {claude_dir}  (웹에서 🐳{name})")
+    if a.read_only:
+        print("[agent]   워크스페이스 읽기전용 — 에이전트가 코드 파일을 수정할 수 없습니다(OS 강제).")
     if not a.shell and not a.api_key:
         print("[agent]   첫 실행이면 컨테이너 안에서 /login 으로 한 번 인증하세요(이후 자동 유지).")
     print("[agent]   종료: 컨테이너에서 exit / Ctrl-D")
 
     return subprocess.call(
-        _docker_run_argv(runtime, name, workspace, claude_dir, suffix, tty, extra))
+        _docker_run_argv(runtime, name, workspace, claude_dir, suffix, tty,
+                         read_only=a.read_only, extra=extra))
 
 
 def _make_output_safe() -> None:
