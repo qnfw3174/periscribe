@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Periscribe — Docker · 컨테이너 관계 문서</title>
+<style>
+  :root{--bg:#0f1115;--panel:#171a21;--ink:#e6e9ef;--muted:#8a93a6;--border:#2a2f3a;--accent:#6ea8fe;--ok:#4cd585;--warn:#ffb454}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Pretendard","Malgun Gothic","Segoe UI",system-ui,sans-serif;line-height:1.6}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 24px 80px}
+  h1{font-size:24px;margin:0 0 4px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:6px}
+  .legend{color:var(--muted);font-size:12px;margin-bottom:22px}
+  .legend b.done{color:var(--ok)} .legend b.opt{color:var(--warn)}
+  h2{font-size:18px;margin:30px 0 6px;padding-top:12px;border-top:1px solid var(--border)}
+  h3{font-size:15px;margin:20px 0 4px;color:#cfd5e0}
+  p.cap{color:var(--muted);font-size:12.5px;margin:2px 0 8px}
+  .diagram{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px;margin:8px 0 4px;overflow:auto}
+  .mermaid{font-size:13px}
+  code{background:#11141a;border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}
+  th,td{border:1px solid var(--border);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:var(--panel)}
+  .note{background:#1a1410;border:1px solid #5a4420;border-radius:8px;padding:8px 12px;font-size:12.5px;color:#f0c987;margin:8px 0}
+  .key{background:#101a14;border:1px solid #20543a;border-radius:8px;padding:8px 12px;font-size:12.5px;color:#9fe0bb;margin:8px 0}
+  a{color:var(--accent)}
+  .pill{display:inline-block;font-size:11px;border-radius:10px;padding:1px 8px;border:1px solid var(--border)}
+  .pill.req{color:var(--ok);border-color:#20543a;background:#101a14}
+  .pill.opt{color:var(--warn);border-color:#5a4420;background:#1a1410}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⌖ Periscribe — Docker · 컨테이너 관계 문서</h1>
+  <div class="sub">에이전트를 컨테이너로 격리해 돌릴 때 Docker · VS Code · Claude Code · Collector가 어떻게 엮이는가</div>
+  <div class="legend">범례: <b class="done">●필수</b> · <b class="opt">○선택/택일</b> &nbsp;|&nbsp; 원본: <code>docs/DOCKER-CONCEPTS.md</code> · 관련 <a href="design-flows.html">design-flows.html</a></div>
+
+  <h2>1. 한 장 그림</h2>
+  <p class="cap">컨테이너의 주인은 Docker Engine. VS Code / periscribe-agent 는 "띄워줘"라고 부탁하는 진입구일 뿐. Claude Code 는 컨테이너 안 평범한 CLI.</p>
+  <div class="diagram"><pre class="mermaid">
+flowchart TD
+  subgraph ENTRY["진입구 (택1)"]
+    VS["VS Code<br/>Dev Containers 확장"]
+    AG["periscribe-agent<br/>우리 런처 · IDE 불필요"]
+  end
+  ENG["Docker Engine (dockerd)<br/>컨테이너를 실제로 관리"]
+  subgraph CON["컨테이너 (격리된 리눅스)"]
+    CC["Claude Code (CLI)<br/>이미지에 npm 설치 · 실제 에이전트"]
+    MNT["마운트: 워크스페이스만 → /workspace<br/>--cap-drop=ALL · user=node<br/>(그 외 호스트 파일 안 보임)"]
+  end
+  HOST["호스트<br/>periscribe-agents / name / proj / session.jsonl"]
+  COL["호스트 Collector (periscribe.exe)<br/>watch → 경로에서 container_id 스탬프"]
+  ING["ingest 함수 → Supabase events"]
+  WEB["웹 — 🐳 name 배지로 실시간 표시"]
+  VS ==>|"docker run 요청"| ENG
+  AG ==>|"docker run 요청"| ENG
+  ENG --> CON
+  CC -->|"transcript<br/>~/.claude/projects"| HOST
+  HOST -->|"bind-mount 로 유출"| COL --> ING --> WEB
+  </pre></div>
+  <div class="key">한 줄 요약: <b>컨테이너의 주인 = Docker Engine</b>. VS Code/periscribe-agent = 진입구(택1). Claude Code = 컨테이너 안 CLI. Collector = 컨테이너 <b>밖</b> 호스트 데몬.</div>
+
+  <h2>2. 부품별 역할</h2>
+  <table>
+    <tr><th>부품</th><th>정체</th><th>역할</th><th></th></tr>
+    <tr><td><b>Docker Engine</b> (<code>dockerd</code>)</td><td>컨테이너 런타임(데몬)</td><td>이미지 빌드, 컨테이너 생성·실행·정지·삭제. 컨테이너의 실제 관리자.</td><td><span class="pill req">●필수</span></td></tr>
+    <tr><td><b>Docker Desktop</b></td><td>Engine + WSL2 VM + GUI 묶음</td><td>Windows/Mac에서 Engine을 쉽게 깔아주는 제품. 라이선스 약관은 여기에만 걸림(§6).</td><td><span class="pill opt">○선택</span></td></tr>
+    <tr><td><b>이미지</b></td><td>읽기전용 템플릿</td><td>OS+도구+claude-code 스냅샷. 컨테이너는 이미지로부터 인스턴스화.</td><td>—</td></tr>
+    <tr><td><b>컨테이너</b></td><td>이미지로 띄운 실행 인스턴스</td><td>격리된 리눅스 프로세스 공간. 여기서 Claude Code가 돎.</td><td>—</td></tr>
+    <tr><td><b>VS Code</b> + Dev Containers</td><td>에디터 + 확장</td><td>컨테이너를 띄우라 시키는 런처 + 컨테이너 안 터미널/에디터 UI.</td><td><span class="pill opt">○택일</span></td></tr>
+    <tr><td><b>periscribe-agent</b></td><td>우리 CLI 런처(별도 exe)</td><td>VS Code 없이 <code>docker run -it</code>으로 컨테이너 안 Claude Code에 직접 진입.</td><td><span class="pill opt">○택일</span></td></tr>
+    <tr><td><b>Claude Code</b></td><td>컨테이너 안 CLI 에이전트</td><td>작업 수행 + transcript 기록. VS Code와 무관.</td><td><span class="pill req">●필수</span></td></tr>
+    <tr><td><b>Collector</b> (<code>periscribe.exe</code>)</td><td>호스트 백그라운드 데몬</td><td>bind로 유출된 transcript를 tail → Supabase 적재. 컨테이너 밖에서 돎.</td><td><span class="pill req">●필수</span></td></tr>
+  </table>
+
+  <h2>3. 누가 컨테이너를 관리하나 — Engine이지 VS Code가 아니다</h2>
+  <p class="cap">대시보드/<code>docker ps</code>의 컨테이너 ID는 Engine이 소유. VS Code를 꺼도 컨테이너는 계속 산다. (VS Code가 띄운 이미지 이름은 <code>vsc-…</code>로 시작 — 그 흔적.)</p>
+  <div class="diagram"><pre class="mermaid">
+flowchart LR
+  VS["VS Code"] --> ENG
+  CLI["docker CLI"] --> ENG
+  AG["periscribe-agent"] --> ENG
+  ENG["Docker Engine<br/>(진짜 관리자)"] --> C["컨테이너 (ID)"]
+  DASH["대시보드 GUI"] -.->|"보여주기만 함"| C
+  </pre></div>
+
+  <h2>4. 호스트 쉘 vs 컨테이너 쉘 — Claude는 "어느 무대"에서 도는가</h2>
+  <p class="cap">같은 <code>claude</code> CLI라도 어느 환경에서 실행되느냐가 🖥 vs 🐳를 가른다. VS Code "Reopen in Container"는 통합 터미널을 호스트 쉘에서 컨테이너 쉘로 바꿔치기한다.</p>
+  <div class="diagram"><pre class="mermaid">
+flowchart TD
+  subgraph H["① 호스트에서 그냥 실행"]
+    HS["터미널 = Windows 쉘"] --> HC["claude (호스트에서 돎)"] --> HP["호스트 ~/.claude/projects<br/>→ 🖥 호스트 세션"]
+  end
+  subgraph K["② 컨테이너 안에서 실행"]
+    KS["터미널 = 컨테이너 쉘 (node)"] --> KC["claude (컨테이너에서 돎)"] --> KP["컨테이너 ~/.claude/projects<br/>→ bind로 호스트 유출 → 🐳 세션"]
+  end
+  </pre></div>
+  <table>
+    <tr><th></th><th>터미널(쉘)이 있는 곳</th><th>Claude가 도는 곳</th><th>transcript</th><th>웹</th></tr>
+    <tr><td>호스트에서 실행</td><td>Windows(호스트)</td><td>호스트</td><td>호스트 <code>~/.claude/projects</code></td><td>🖥 호스트</td></tr>
+    <tr><td>컨테이너에서 실행</td><td>컨테이너(리눅스, node)</td><td>컨테이너</td><td>컨테이너 → bind → 호스트</td><td>🐳 name</td></tr>
+  </table>
+
+  <h2>5. 두 가지 진입 방법</h2>
+  <p class="cap">격리·수집 메커니즘은 동일(워크스페이스만 마운트 · --cap-drop=ALL · 경로 첫 세그먼트=container_id). 차이는 "어떻게 들어가느냐"뿐.</p>
+  <table>
+    <tr><th></th><th>VS Code "Reopen in Container"</th><th>periscribe-agent 런처 (권장)</th></tr>
+    <tr><td>진입구</td><td>IDE(에디터 창)</td><td>터미널 한 줄 / exe 더블클릭</td></tr>
+    <tr><td>무게</td><td>VS Code Server를 컨테이너에 설치</td><td>없음 (바로 <code>docker run -it</code>)</td></tr>
+    <tr><td>띄우는 법</td><td>확장이 <code>.devcontainer/</code> 자동 처리</td><td><code>periscribe-agent &lt;폴더&gt; --name &lt;id&gt;</code></td></tr>
+    <tr><td>인증</td><td>컨테이너 안에서 매번 별도</td><td>첫 1회 <code>/login</code> → 호스트에 영속(재로그인 불필요)</td></tr>
+    <tr><td>이미지</td><td><code>vsc-…</code> (자동)</td><td><code>periscribe-agent:latest</code> (임베드 Dockerfile 1회 빌드)</td></tr>
+    <tr><td>수집</td><td colspan="2" style="text-align:center">동일 — bind → Collector → 🐳</td></tr>
+  </table>
+  <div class="key">periscribe-agent 는 컨테이너 <code>~/.claude</code> <b>전체</b>를 호스트 <code>container_root/name</code>에 bind → 로그인 토큰이 호스트에 남아 재로그인 불필요, 그 아래 <code>projects/…</code> transcript는 그대로 Collector가 수집. (devcontainer는 <code>~/.claude/projects</code>만 bind.)</div>
+
+  <h2>6. 라이선스 — 걸리는 건 "컨테이너"가 아니라 "Docker Desktop"뿐</h2>
+  <p class="cap">컨테이너 기술/엔진 자체는 무료. 약관은 Docker Desktop이라는 제품에만 적용된다.</p>
+  <h3>Docker Desktop (2026 기준)</h3>
+  <table>
+    <tr><th>대상</th><th>비용</th></tr>
+    <tr><td>개인 · 학생 · 비상업 OSS · <b>직원 250명 미만 그리고 연매출 $1,000만 미만</b> 소기업</td><td><b style="color:var(--ok)">무료</b> (Docker Personal)</td></tr>
+    <tr><td>직원 250명 이상 <b>또는</b> 연매출 $1,000만 이상</td><td>유료 (Pro/Team/Business, 인·월 $9~24)</td></tr>
+  </table>
+  <p class="cap">→ 개인/소규모면 Desktop도 무료. 큰 회사 PC에 배포할 때만 그쪽의 라이선스 부담이 생긴다.</p>
+  <h3>Desktop 없이 같은 컨테이너를 쓰는 무료 대안</h3>
+  <table>
+    <tr><th>런타임</th><th>라이선스</th><th>비고</th></tr>
+    <tr><td>Docker Engine (WSL2에 직접)</td><td>Apache 2.0 (무료)</td><td>Desktop 없이 <code>dockerd</code>만. 데몬 직접 관리(WSL2 systemd로 수월).</td></tr>
+    <tr><td>Podman / Podman Desktop</td><td>Apache 2.0 (무료)</td><td>데몬리스·루트리스. <code>docker</code>와 CLI 호환. 상업 무료.</td></tr>
+    <tr><td>Rancher Desktop</td><td>오픈소스 (무료)</td><td>내부 moby/containerd. GUI도 무료.</td></tr>
+  </table>
+  <div class="key">설계 방침: periscribe-agent 는 PATH의 <code>docker</code>(→ 향후 <code>podman</code>)를 자동 감지 → Desktop이든 Engine이든 Podman이든 <b>런처 코드 변경 없이</b> 동작. 라이선스 결정을 미뤄도 되고, 갈아타도 공짜로 따라온다.</div>
+
+  <h2>7. 용어 · 격리 한계</h2>
+  <table>
+    <tr><th>용어</th><th>뜻</th></tr>
+    <tr><td>이미지 vs 컨테이너</td><td>이미지=템플릿(읽기전용), 컨테이너=이미지로 띄운 실행 인스턴스. 여럿이 한 이미지 공유.</td></tr>
+    <tr><td>bind mount vs volume</td><td>bind=호스트 특정 경로를 컨테이너에 직결(transcript 유출·로그인 영속에 사용). volume=Docker 관리 저장소.</td></tr>
+    <tr><td><code>--cap-drop=ALL</code></td><td>컨테이너 프로세스의 리눅스 capability 전부 제거(권한 최소화).</td></tr>
+    <tr><td><code>container_root</code></td><td>Collector가 "컨테이너 세션"으로 watch하는 루트(<code>%USERPROFILE%\periscribe-agents</code>). 그 아래 <b>첫 경로 세그먼트 = container_id</b>(웹 🐳 라벨).</td></tr>
+  </table>
+  <div class="note">⚠ 격리의 결: 이 구조는 <b>파일시스템 + capability</b> 수준. 컨테이너는 호스트와 <b>같은 커널</b>을 공유 → 커널 익스플로잇까지 막으려면 microVM(예: Firecracker). 네트워크/egress 차단은 범위 밖(인프라 계층에 둬야 강제 가능). 상세 <a href="CONTAINERS.md">CONTAINERS.md</a>.</div>
+
+  <p class="cap" style="margin-top:24px">관련 문서: <a href="DOCKER-CONCEPTS.md">DOCKER-CONCEPTS.md</a>(원본) · <a href="CONTAINERS.md">CONTAINERS.md</a>(실무 절차) · <a href="DEPLOY.md">DEPLOY.md</a> · <a href="E2EE-DESIGN.md">E2EE-DESIGN.md</a> · <a href="design-flows.html">design-flows.html</a></p>
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad:true, theme:'dark', securityLevel:'loose',
+    sequence:{ useMaxWidth:true }, flowchart:{ useMaxWidth:true } });
+</script>
+</body>
+</html>
