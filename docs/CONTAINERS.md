@@ -51,8 +51,10 @@ periscribe-agent <작업폴더> --name <box-id>
 컨테이너 안 에이전트가 무엇을 할 수 있는지를 **호스트의 정책 JSON 파일**로 제어한다. 런처가 이 파일을
 읽어 `docker run` 플래그로 변환하므로 **커널/Docker가 강제**한다 — Claude의 권한 기능과 무관하고
 에이전트가 못 끈다. **파일만 편집하면 다음 실행부터 적용(코드 수정·재빌드 불필요).**
-- 위치: `%LOCALAPPDATA%\Periscribe\policies\<name>.json` (없으면 기본 템플릿 자동 생성) 또는 `--policy <경로>`.
-- `--no-policy` 로 정책 미적용(기본 격리만).
+- 우선순위(높→낮): `--policy <경로>`(지정) > 박스별 `policies\<name>.json`(있을 때만, 그 박스만) >
+  **머신 전체 기본 `policies\_default.json`**(없으면 자동 생성 — 한 번 편집하면 모든 박스에 적용).
+- 즉 **머신 전체 적용**은 `%LOCALAPPDATA%\Periscribe\policies\_default.json` 편집. 특정 박스만 다르게 하려면
+  그 이름의 `<name>.json`을 만들어 덮어쓴다. `--no-policy` 로 정책 미적용(기본 격리만).
 
 | 키 | 기본 | 효과(docker) |
 |---|---|---|

@@ -125,9 +125,14 @@ def _policies_dir() -> Path:
     return _data_dir() / "policies"
 
 
+# 머신 전체 기본 정책 파일명. 박스 이름은 _sanitize_name 이 선두 '_'를 떼므로 이 이름과 충돌하지 않는다.
+GLOBAL_POLICY_NAME = "_default.json"
+
+
 def _resolve_policy_file(name: str, policy_arg: str) -> Path:
-    """적용할 정책 파일. --policy 경로가 있으면 그 파일, 없으면 박스별
-    <data>/policies/<name>.json(없으면 기본 템플릿 생성). 둘 다 호스트라 재빌드 없이 편집 적용."""
+    """적용할 정책 파일. 우선순위: --policy 지정 > 박스별 <name>.json(있을 때만) >
+    머신 전체 _default.json. 전체 기본은 없으면 템플릿으로 생성(머신 단위로 한 번만 편집하면
+    모든 박스에 적용). 박스별 파일은 자동 생성하지 않고, 있으면 그 박스만 덮어쓴다."""
     if policy_arg:
         p = Path(policy_arg).expanduser()
         if not p.is_file():
@@ -135,10 +140,13 @@ def _resolve_policy_file(name: str, policy_arg: str) -> Path:
         return p
     pdir = _policies_dir()
     pdir.mkdir(parents=True, exist_ok=True)
-    f = pdir / f"{name}.json"
-    if not f.exists():
-        f.write_text(POLICY_TEMPLATE, encoding="utf-8")
-    return f
+    per_box = pdir / f"{name}.json"
+    if per_box.is_file():
+        return per_box
+    glob = pdir / GLOBAL_POLICY_NAME
+    if not glob.exists():
+        glob.write_text(POLICY_TEMPLATE, encoding="utf-8")
+    return glob
 
 
 def _path_rule_mounts(workspace: Path, rel_paths: object, readonly: bool,
@@ -416,8 +424,14 @@ def cmd_agent(argv: list[str]) -> int:
     print(f"[agent]   transcript → {claude_dir}  (웹에서 🐳{name})")
     if policy_file:
         controls = _active_controls(ws_readonly, policy_args)
-        print(f"[agent]   컨테이너 정책: {', '.join(controls) if controls else '기본(제약 없음)'}")
-        print(f"[agent]     [{policy_file}] — 편집해 제어(예: workspace_writable:false). 다음 실행부터 적용(재빌드 불필요).")
+        if a.policy:
+            scope = "지정"
+        elif policy_file.name == GLOBAL_POLICY_NAME:
+            scope = "머신 전체 기본"
+        else:
+            scope = f"박스 '{name}' 전용"
+        print(f"[agent]   컨테이너 정책({scope}): {', '.join(controls) if controls else '기본(제약 없음)'}")
+        print(f"[agent]     [{policy_file}] — 편집해 제어. 다음 실행부터 적용(재빌드 불필요).")
     else:
         print("[agent]   컨테이너 정책: 미적용(--no-policy) — 기본 격리만")
     for w in policy_warnings:
