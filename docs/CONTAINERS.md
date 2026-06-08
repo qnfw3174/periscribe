@@ -57,6 +57,8 @@ periscribe-agent <작업폴더> --name <box-id>
 | 키 | 기본 | 효과(docker) |
 |---|---|---|
 | `workspace_writable` | true | false → 워크스페이스 읽기전용 마운트(**코드 파일 수정 차단**) |
+| `writable_paths` | [] | (ro 워크스페이스에서) 이 하위경로만 쓰기 허용 — 중첩 rw bind |
+| `readonly_paths` | [] | (rw 워크스페이스에서) 이 하위경로만 보호(읽기전용) — 중첩 ro bind |
 | `network` | true | false → `--network=none`(외부 차단). ⚠ Claude는 API/로그인 필요 → `--shell` 점검용 |
 | `no_new_privileges` | false | true → `--security-opt=no-new-privileges`(권한 상승 차단) |
 | `read_only_rootfs` | false | true → 루트FS 읽기전용(+`/tmp` tmpfs). 실험적 |
@@ -67,6 +69,15 @@ periscribe-agent <작업폴더> --name <box-id>
 ```json
 { "workspace_writable": false, "no_new_privileges": true }
 ```
+예) "전체 읽기전용인데 `build/`·`out/`만 쓰기 허용":
+```json
+{ "workspace_writable": false, "writable_paths": ["build", "out"] }
+```
+예) "전체 쓰기 가능인데 `src/`·`.git/`만 보호":
+```json
+{ "workspace_writable": true, "readonly_paths": ["src", ".git"] }
+```
+하위경로 규칙은 워크스페이스 안에 실재하는 경로만 적용된다(밖이거나 없으면 경고 후 무시 — 보안).
 잘못된 값/미지 키는 경고만 남기고 허용적 기본값으로 진행한다(launch 안 막힘).
 
 ## 호스트 Collector 설정

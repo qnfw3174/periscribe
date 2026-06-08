@@ -40,6 +40,8 @@ WORKDIR /workspace
 POLICY_TEMPLATE = """{
   "version": 1,
   "workspace_writable": true,
+  "writable_paths": [],
+  "readonly_paths": [],
   "network": true,
   "drop_all_capabilities": true,
   "no_new_privileges": false,
@@ -51,8 +53,9 @@ POLICY_TEMPLATE = """{
 """
 
 _KNOWN_POLICY_KEYS = {
-    "version", "workspace_writable", "network", "drop_all_capabilities",
-    "no_new_privileges", "read_only_rootfs", "memory", "cpus", "pids",
+    "version", "workspace_writable", "writable_paths", "readonly_paths",
+    "network", "drop_all_capabilities", "no_new_privileges", "read_only_rootfs",
+    "memory", "cpus", "pids",
 }
 _MEM_RE = re.compile(r"^\d+(\.\d+)?[bkmgBKMG]?$")
 _CPU_RE = re.compile(r"^\d+(\.\d+)?$")
@@ -138,7 +141,43 @@ def _resolve_policy_file(name: str, policy_arg: str) -> Path:
     return f
 
 
-def _policy_to_run_args(policy: object, running_claude: bool) -> tuple[bool, list[str], list[str]]:
+def _path_rule_mounts(workspace: Path, rel_paths: object, readonly: bool,
+                      kind: str) -> tuple[list[str], list[str]]:
+    """워크스페이스 하위 경로별 ro/rw 중첩 bind 마운트를 만든다(컨테이너 레벨 세밀 제어).
+    호스트 source 가 워크스페이스 안에 실재해야 적용(밖이거나 없으면 경고 후 무시)."""
+    mounts: list[str] = []
+    warns: list[str] = []
+    if rel_paths in (None, ""):
+        return mounts, warns
+    if not isinstance(rel_paths, list):
+        return mounts, [f"{kind} 는 경로 배열이어야 함 → 무시."]
+    wsr = workspace.resolve()
+    for rel in rel_paths:
+        if not isinstance(rel, str) or not rel.strip():
+            warns.append(f"{kind}: 빈/잘못된 경로 → 무시.")
+            continue
+        rel_clean = rel.strip().replace("\\", "/").strip("/")
+        src = (workspace / rel_clean).resolve()
+        try:
+            src.relative_to(wsr)
+        except ValueError:
+            warns.append(f"{kind}: '{rel}' 는 워크스페이스 밖 → 무시(보안).")
+            continue
+        if src == wsr:
+            warns.append(f"{kind}: '{rel}' 는 워크스페이스 루트 → workspace_writable 로 설정하세요.")
+            continue
+        if not src.exists():
+            warns.append(f"{kind}: '{rel}' 가 호스트에 없음 → 무시.")
+            continue
+        m = f"type=bind,source={src},target=/workspace/{rel_clean}"
+        if readonly:
+            m += ",readonly"
+        mounts += ["--mount", m]
+    return mounts, warns
+
+
+def _policy_to_run_args(policy: object, running_claude: bool,
+                        workspace: Path) -> tuple[bool, list[str], list[str]]:
     """컨테이너 정책 → (워크스페이스 읽기전용?, 추가 docker 플래그, 경고들).
     잘못/누락 키는 launch 를 막지 않고 허용적 기본값으로 폴백하며 경고만 남긴다."""
     warnings: list[str] = []
@@ -158,6 +197,19 @@ def _policy_to_run_args(policy: object, running_claude: bool) -> tuple[bool, lis
         warnings.append(f"알 수 없는 정책 version={policy.get('version')!r} — 그대로 진행.")
 
     ws_readonly = not _flag("workspace_writable", True)
+
+    # 하위 경로별 예외(중첩 bind). ro 워크스페이스엔 writable_paths(쓰기 예외),
+    # rw 워크스페이스엔 readonly_paths(보호)만 의미가 있다.
+    if ws_readonly:
+        m, w = _path_rule_mounts(workspace, policy.get("writable_paths"), False, "writable_paths")
+        args += m; warnings += w
+        if policy.get("readonly_paths"):
+            warnings.append("readonly_paths: 워크스페이스가 이미 읽기전용이라 무의미 → 무시.")
+    else:
+        m, w = _path_rule_mounts(workspace, policy.get("readonly_paths"), True, "readonly_paths")
+        args += m; warnings += w
+        if policy.get("writable_paths"):
+            warnings.append("writable_paths: 워크스페이스가 쓰기 가능이라 무의미 → 무시.")
 
     if not _flag("network", True):
         args.append("--network=none")
@@ -212,7 +264,8 @@ def _active_controls(ws_readonly: bool, args: list[str]) -> list[str]:
         labels.append("워크스페이스 읽기전용🔒")
     fixed = {"--network=none": "네트워크 차단", "--read-only": "루트FS 읽기전용",
              "--security-opt=no-new-privileges:true": "권한상승 차단", "--cap-add=ALL": "⚠모든 capability"}
-    for arg in args:
+    rw_paths = ro_paths = 0
+    for j, arg in enumerate(args):
         if arg in fixed:
             labels.append(fixed[arg])
         elif arg.startswith("--memory="):
@@ -221,6 +274,15 @@ def _active_controls(ws_readonly: bool, args: list[str]) -> list[str]:
             labels.append("CPU " + arg.split("=", 1)[1])
         elif arg.startswith("--pids-limit="):
             labels.append("PID " + arg.split("=", 1)[1])
+        elif arg == "--mount" and j + 1 < len(args) and "target=/workspace/" in args[j + 1]:
+            if ",readonly" in args[j + 1]:
+                ro_paths += 1
+            else:
+                rw_paths += 1
+    if rw_paths:
+        labels.append(f"쓰기예외 {rw_paths}곳")
+    if ro_paths:
+        labels.append(f"보호경로 {ro_paths}곳")
     return labels
 
 
@@ -333,7 +395,7 @@ def cmd_agent(argv: list[str]) -> int:
             print(f"[agent] 정책 파일 JSON 오류 ({policy_file}): {e}", file=sys.stderr)
             return 2
         ws_readonly, policy_args, policy_warnings = _policy_to_run_args(
-            pol, running_claude=not a.shell)
+            pol, running_claude=not a.shell, workspace=workspace)
 
     if a.rebuild or not _image_exists(runtime):
         print(f"[agent] 이미지 빌드 중 ({AGENT_IMAGE}) — 최초 1회, 수 분 소요…")
