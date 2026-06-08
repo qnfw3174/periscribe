@@ -6,6 +6,10 @@
 이번 범위는 **파일시스템 격리만**(워크스페이스 밖 호스트 파일을 컨테이너가 못 봄). 네트워킹/
 egress 제한(stage 1)은 범위 밖이다.
 
+> Docker·컨테이너·VS Code·Claude Code가 서로 어떤 관계인지(누가 컨테이너를 관리하나, 라이선스 등)
+> 개념 정리는 [DOCKER-CONCEPTS.md](DOCKER-CONCEPTS.md). 아래 "VS Code Reopen in Container" 대신
+> **VS Code 없이** 컨테이너에 진입하려면 `periscribe-agent` 런처를 쓴다(↓ "사용 B").
+
 ```
 [ devcontainer ] Claude Code ─writes→ ~/.claude/projects (컨테이너)
    워크스페이스만 마운트       │ bind-mount
@@ -22,12 +26,26 @@ egress 제한(stage 1)은 범위 밖이다.
 2. **Docker Desktop**: 설치 후 *Settings → General → Use WSL 2 based engine* 켜기.
 3. VS Code + **Dev Containers** 확장(devcontainer 열기용).
 
-## 사용
+## 사용 A — VS Code (Reopen in Container)
 1. 격리해서 돌릴 프로젝트 폴더에 이 레포의 `.devcontainer/`(Dockerfile + devcontainer.json)를 복사.
    - `devcontainer.json`의 마운트 규약상 **워크스페이스 폴더명이 container_id**가 된다.
 2. VS Code에서 그 폴더 열기 → "Reopen in Container". 컨테이너 안에서 Claude Code 사용.
    - Claude Code 인증(ANTHROPIC_API_KEY 등)은 컨테이너 안에서 별도로.
 3. 컨테이너의 transcript는 호스트 `%USERPROFILE%\periscribe-agents\<폴더명>\...`에 쌓인다.
+
+## 사용 B — `periscribe-agent` 런처 (VS Code 없이, 권장)
+VS Code/Dev Containers 확장 없이 컨테이너 안 Claude Code로 바로 진입한다. `.devcontainer/` 복사도 불필요
+(런처가 Dockerfile을 임베드해 `periscribe-agent:latest` 이미지를 최초 1회 자동 빌드).
+```
+periscribe-agent <작업폴더> --name <box-id>
+```
+- `--name`(= container_id, 웹 🐳 라벨). 생략 시 작업 폴더명.
+- 첫 실행이면 컨테이너 안에서 `/login` 한 번 → 호스트 `<container_root>/<name>\.credentials.json`에
+  남아 **재실행 시 재로그인 불필요**(`~/.claude` 전체를 호스트에 bind하기 때문).
+- `--shell` 로 claude 대신 bash 진입, `--api-key` 로 키 주입(로그인 대신).
+- 마운트/격리/수집은 사용 A와 동일(워크스페이스만, `--cap-drop=ALL`, 경로 첫 세그먼트=container_id).
+- 빌드: `packaging/build.ps1` → `periscribe-agent.exe`(컬렉터 `periscribe.exe`와 별도 console exe).
+  개념·라이선스·런타임 대안은 [DOCKER-CONCEPTS.md](DOCKER-CONCEPTS.md).
 
 ## 호스트 Collector 설정
 호스트 Collector가 컨테이너 루트도 보게 한다:
