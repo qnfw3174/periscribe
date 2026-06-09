@@ -36,6 +36,62 @@ DEFAULT_INGEST_URL = os.environ.get(
     "https://wgzsjdmohbawfcxiicqc.supabase.co/functions/v1/ingest",
 )
 
+SYSMON_DOWNLOAD_URL = "https://live.sysinternals.com/Sysmon64.exe"
+
+# Sysmon 설정: 프로세스 생성(EID 1)만, 그것도 shell(또는 그 자식)만 로깅 → OS 노이즈를 소스에서 제거.
+SYSMON_CONFIG_XML = """<Sysmon schemaversion="4.50">
+  <EventFiltering>
+    <RuleGroup name="periscribe-shells" groupRelation="or">
+      <ProcessCreate onmatch="include">
+        <Image condition="end with">\\cmd.exe</Image>
+        <Image condition="end with">\\powershell.exe</Image>
+        <Image condition="end with">\\pwsh.exe</Image>
+        <Image condition="end with">\\bash.exe</Image>
+        <Image condition="end with">\\sh.exe</Image>
+        <Image condition="end with">\\wsl.exe</Image>
+        <ParentImage condition="end with">\\cmd.exe</ParentImage>
+        <ParentImage condition="end with">\\powershell.exe</ParentImage>
+        <ParentImage condition="end with">\\pwsh.exe</ParentImage>
+        <ParentImage condition="end with">\\bash.exe</ParentImage>
+        <ParentImage condition="end with">\\sh.exe</ParentImage>
+        <ParentImage condition="end with">\\wsl.exe</ParentImage>
+      </ProcessCreate>
+    </RuleGroup>
+    <ProcessTerminate onmatch="include" />
+    <FileCreate onmatch="include" />
+    <NetworkConnect onmatch="include" />
+    <ImageLoad onmatch="include" />
+  </EventFiltering>
+</Sysmon>
+"""
+
+
+def _is_admin() -> bool:
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
+    except Exception:
+        return False
+
+
+def _relaunch_elevated(argv: list[str]) -> int:
+    """현재 프로세스를 UAC 승격으로 재실행(audit-setup 한정). 승격 인스턴스가 실제 작업 수행."""
+    import ctypes
+    if getattr(sys, "frozen", False):
+        exe, params = sys.executable, _join_args(argv)
+    else:
+        exe, params = sys.executable, "-m periscribe " + _join_args(argv)
+    rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)  # type: ignore[attr-defined]
+    if rc <= 32:
+        print("[audit-setup] 관리자 권한 승격이 거부/실패했습니다(UAC).", file=sys.stderr)
+        return 1
+    print("[audit-setup] 관리자 권한 창에서 계속 진행됩니다.")
+    return 0
+
+
+def _join_args(argv: list[str]) -> str:
+    return " ".join(f'"{a}"' if " " in a else a for a in argv)
+
 
 def _cleanup_stale_mei() -> None:
     """onefile(windowed) 빌드가 종료 시 Tk DLL 잠금으로 못 지운 과거 _MEI 임시폴더를 청소.
@@ -238,6 +294,108 @@ def cmd_install(argv: list[str]) -> int:
     # 다음 로그인까지 기다리지 않고 지금 바로 백그라운드 실행.
     _start_collector(config_path)
     print(f"[install] 완료. 헬스바에 곧 표시됩니다. 로그: {cfg['log_file']}")
+    return 0
+
+
+# ---------------- audit-setup (OS 레벨 쉘/프로세스 감사 켜기) ----------------
+def _current_user() -> str:
+    dom = os.environ.get("USERDOMAIN") or socket.gethostname()
+    return f"{dom}\\{os.environ.get('USERNAME', '')}"
+
+
+def _find_sysmon(data: "Path") -> str:
+    import shutil
+    cands = []
+    if getattr(sys, "frozen", False):
+        cands.append(Path(sys.executable).with_name("Sysmon64.exe"))
+    cands.append(data / "Sysmon64.exe")
+    w = shutil.which("Sysmon64.exe") or shutil.which("Sysmon.exe")
+    if w:
+        cands.append(Path(w))
+    for c in cands:
+        if c and Path(c).is_file():
+            return str(c)
+    return ""
+
+
+def _download_sysmon(data: "Path") -> str:
+    dest = data / "Sysmon64.exe"
+    try:
+        import urllib.request
+        print(f"[audit-setup] Sysmon64.exe 다운로드 중… ({SYSMON_DOWNLOAD_URL})")
+        urllib.request.urlretrieve(SYSMON_DOWNLOAD_URL, str(dest))
+        return str(dest) if dest.is_file() else ""
+    except Exception as e:  # noqa: BLE001
+        print(f"[audit-setup] 다운로드 실패: {e}", file=sys.stderr)
+        return ""
+
+
+def _enable_os_exec_in_config(p: "Path") -> None:
+    try:
+        data = json.loads(p.read_text(encoding="utf-8-sig")) if p.is_file() else {}
+    except Exception:
+        data = {}
+    data["os_exec_enabled"] = True
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def cmd_audit_setup(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="periscribe audit-setup",
+        description="OS 레벨 쉘/프로세스 실행 감사 켜기 (Sysmon 설치 + 로그읽기 권한, 관리자 1회)")
+    p.add_argument("--config", default=str(_installed_config_path()))
+    p.add_argument("--sysmon", default="", help="Sysmon64.exe 경로(생략 시 동봉/다운로드)")
+    p.add_argument("--user", default="", help="로그 읽기 권한 부여 대상 계정(기본: 현재 사용자)")
+    p.add_argument("--dry-run", action="store_true", help="실제 변경 없이 계획만 출력")
+    a = p.parse_args(argv)
+
+    if os.name != "nt":
+        print("[audit-setup] Windows 전용입니다(현재는). 다른 OS는 후속(eBPF/auditd).", file=sys.stderr)
+        return 2
+
+    # 관리자 권한 필요 → 아니면 UAC 자기승격(승격 인스턴스가 실제 작업 수행).
+    if not a.dry_run and not _is_admin():
+        print("[audit-setup] 관리자 권한이 필요합니다 — UAC 승격을 요청합니다…")
+        return _relaunch_elevated(["audit-setup"] + argv)
+
+    data = _data_dir()
+    data.mkdir(parents=True, exist_ok=True)
+    sysmon_cfg = data / "periscribe-sysmon.xml"
+    sysmon_cfg.write_text(SYSMON_CONFIG_XML, encoding="utf-8")
+    user = a.user or _current_user()
+    sysmon = a.sysmon or _find_sysmon(data)
+
+    print(f"[audit-setup] Sysmon 설정: {sysmon_cfg}")
+    print(f"[audit-setup] Sysmon 실행파일: {sysmon or '(다운로드 예정)'}")
+    print(f"[audit-setup] 로그읽기 권한 대상: {user}")
+    print(f"[audit-setup] config: {a.config}")
+    if a.dry_run:
+        print("[audit-setup] --dry-run: 실제 변경 없음")
+        return 0
+
+    if not sysmon:
+        sysmon = _download_sysmon(data)
+        if not sysmon:
+            print("[audit-setup] Sysmon64.exe 확보 실패. --sysmon 로 경로를 지정하세요.", file=sys.stderr)
+            return 3
+
+    # Sysmon 설치(또는 이미 설치됐으면 설정만 갱신).
+    rc = subprocess.call([sysmon, "-accepteula", "-i", str(sysmon_cfg)])
+    if rc != 0:
+        rc = subprocess.call([sysmon, "-c", str(sysmon_cfg)])
+    if rc != 0:
+        print(f"[audit-setup] Sysmon 설치/설정 실패(rc={rc}).", file=sys.stderr)
+        return rc
+
+    # 컬렉터(비관리자) 사용자에게 Sysmon Operational 로그 읽기 권한 부여.
+    subprocess.call(["net", "localgroup", "Event Log Readers", user, "/add"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    _enable_os_exec_in_config(Path(a.config))
+    print("[audit-setup] 완료 ✅  컬렉터를 재시작하면(로그아웃/로그인 또는 재실행) OS 쉘/프로세스 실행을 "
+          "수집합니다(웹에서 🐚 OS).")
+    print("[audit-setup] 끄려면: config 의 os_exec_enabled=false + (선택) Sysmon 제거 'Sysmon64 -u'.")
     return 0
 
 
@@ -477,6 +635,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_setup(argv[1:])
     if argv and argv[0] == "run":
         return cmd_run(argv[1:])
+    if argv and argv[0] == "audit-setup":
+        return cmd_audit_setup(argv[1:])
 
     if not argv:
         # 단일 exe 더블클릭: GUI 설치 창(설치돼 있으면 재설치 안내도 GUI에서).

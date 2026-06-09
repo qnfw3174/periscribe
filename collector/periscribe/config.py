@@ -29,6 +29,17 @@ class Config:
     # 하위 첫 폴더명이 container_id (예: <root>/<container_id>/<proj>/<session>.jsonl).
     container_root: str = ""
 
+    # OS 레벨 프로세스 실행 감사(쉘 작업 자체 감시; transcript 비의존). Windows=Sysmon(EID 1).
+    # enable 시 컬렉터가 이벤트로그를 폴링해 정규화 이벤트를 watch_dir/_osexec spool 에 기록 → 기존 파이프라인 수집.
+    os_exec_enabled: bool = False
+    os_exec_source: str = "sysmon"       # 'sysmon' | '4688'(후속)
+    os_exec_log: str = "Microsoft-Windows-Sysmon/Operational"
+    os_exec_poll_interval: float = 2.0   # exec는 고volume → transcript(0.4s)보다 느리게 폴
+    os_exec_shell_images: list = field(
+        default_factory=lambda: ["cmd.exe", "powershell.exe", "pwsh.exe",
+                                 "bash.exe", "sh.exe", "wsl.exe", "git.exe"])
+    os_exec_deny_images: list = field(default_factory=list)
+
     # 식별
     machine_id: str = field(default_factory=socket.gethostname)
     source: str = "claude-code"
@@ -134,4 +145,6 @@ def _coerce(value: str, to_type: type) -> Any:
         return int(value)
     if to_type is float:
         return float(value)
+    if to_type is list:
+        return [s for s in (x.strip() for x in value.split(",")) if s]
     return value

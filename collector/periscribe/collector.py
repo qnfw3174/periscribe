@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import signal
 import sys
@@ -74,6 +75,25 @@ class Collector:
             except Exception as e:
                 self._last_error = f"DEK 로드 실패: {e}"
                 self._log(f"[periscribe] DEK 로드 실패(재부트스트랩 시도): {e}")
+
+        # OS 레벨 exec 감사(옵션, Windows). 활성 시 매 루프 정규화 이벤트를 watch_dir/_osexec spool 에
+        # 기록 → 아래 discover()가 그 *.jsonl 을 픽업해 기존 파이프라인으로 수집(코드 재사용).
+        self._audit = None
+        self._last_audit_poll = 0.0
+        if config.os_exec_enabled and os.name == "nt":
+            try:
+                from .audit_win import WinExecAudit
+                safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", config.machine_id or "host") or "host"
+                spool = Path(config.watch_dir) / "_osexec" / f"{safe}.jsonl"
+                cursor = Path(config.checkpoint_path).with_name("sysmon_cursor.json")
+                self._audit = WinExecAudit(
+                    machine_id=config.machine_id, spool_path=str(spool), cursor_path=str(cursor),
+                    log=config.os_exec_log, shell_images=config.os_exec_shell_images,
+                    deny_images=config.os_exec_deny_images, logger=self._log,
+                )
+                self._log(f"[periscribe] OS exec 감사 활성(session={self._audit.session_id})")
+            except Exception as e:  # noqa: BLE001
+                self._log(f"[periscribe] OS exec 감사 초기화 실패: {e}")
 
     # ---- E2EE: 하트비트 응답의 공개키 처리 + DEK 부트스트랩 ----
     def _handle_enc(self, resp: dict[str, Any] | None) -> None:
@@ -255,6 +275,8 @@ class Collector:
             p = Path(f)
             if p.stem.startswith("agent-"):
                 continue
+            if p.parent.name == "_osexec":
+                continue  # OS exec 감사 spool 은 카탈로그에 안 띄움(이벤트는 정상 적재, 세션 자체 기술적)
             try:
                 st = p.stat()
             except OSError:
@@ -337,6 +359,16 @@ class Collector:
                     self._interruptible_sleep(self.config.poll_interval)
                     continue
                 self._enc_hold_logged = False
+
+                # OS exec 감사 폴(throttle). spool 에 기록 → 아래 discover/_process_file 가 수집.
+                if self._audit is not None:
+                    now_t = time.time()
+                    if now_t - self._last_audit_poll >= self.config.os_exec_poll_interval:
+                        self._last_audit_poll = now_t
+                        try:
+                            self._audit.poll()
+                        except Exception as e:  # noqa: BLE001
+                            self._log(f"[periscribe] OS exec 감사 폴 오류: {e}")
 
                 files = self.discover()
                 total = 0

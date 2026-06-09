@@ -107,6 +107,10 @@ class Parser:
         if not isinstance(obj, dict):
             return []
 
+        # 사전 정규화된 이벤트(예: OS exec 감사 spool) → 그대로 통과(transcript 처리 안 거침).
+        if obj.get("_periscribe_event"):
+            return self._passthrough(obj)
+
         typ = obj.get("type")
         msg = obj.get("message")
         msg = msg if isinstance(msg, dict) else {}
@@ -122,6 +126,20 @@ class Parser:
             return []  # 메타/무관
         # 모르는 type -> skip
         return []
+
+    def _passthrough(self, obj: dict[str, Any]) -> list[dict[str, Any]]:
+        """이미 정규화된 이벤트 dict(spool 산출물)를 검증·레닥션 후 그대로 반환."""
+        ev = {k: v for k, v in obj.items() if k != "_periscribe_event"}
+        ev.setdefault("schema_version", self.schema_version)
+        ev.setdefault("machine_id", self.machine_id)
+        if not (ev.get("event_id") and ev.get("kind") and ev.get("session_id")):
+            return []  # 불완전 → 방어적으로 skip
+        if self.redact and isinstance(ev.get("payload"), dict):
+            try:
+                ev["payload"] = json.loads(_redact(json.dumps(ev["payload"], ensure_ascii=False)))
+            except Exception:
+                pass
+        return [ev]
 
     def _base_fields(self, obj: dict[str, Any], project_folder: Optional[str],
                      container_id: Optional[str] = None) -> dict[str, Any]:

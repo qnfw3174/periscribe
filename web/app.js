@@ -168,6 +168,7 @@
       try { return JSON.stringify(p.input != null ? p.input : p, null, 2); }
       catch (e) { return String(p); }
     }
+    if (ev.kind === "process_exec") return p.command_line || "";   // OS exec 감사(쉘 명령)
     try { return JSON.stringify(p, null, 2); } catch (e) { return String(p); }
   }
 
@@ -184,6 +185,15 @@
     }
     if (ev.kind === "user_prompt" || ev.kind === "assistant_text") {
       return `<div class="text-body">${esc(shown)}</div>${more}`;
+    }
+    if (ev.kind === "process_exec") {
+      const p = ev.payload || {};
+      const meta = [];
+      if (p.image) meta.push("🐚 " + esc(String(p.image).split(/[\\/]/).pop()));
+      if (p.user) meta.push(esc(p.user));
+      if (p.parent_image) meta.push("← " + esc(String(p.parent_image).split(/[\\/]/).pop()));
+      const metaLine = meta.length ? `<div class="event__meta">${meta.join(" · ")}</div>` : "";
+      return metaLine + `<pre class="code bash">${esc(shown)}</pre>${more}`;
     }
     return `<pre class="code">${esc(shown)}</pre>${more}`;
   }
@@ -240,6 +250,7 @@
   function commandTextOf(ev) {
     const p = ev.payload || {};
     if (p.command) return p.command;
+    if (p.command_line) return p.command_line;     // OS exec(쉘 명령)도 같은 룰엔진 통과
     if (p.input) { try { return JSON.stringify(p.input); } catch (e) { return String(p.input); } }
     return "";
   }
@@ -260,6 +271,9 @@
         const hit = matchRules(commandTextOf(ev));
         if (hit) { severity = hit.severity; category = hit.category; }
       }
+    } else if (ev.kind === "process_exec") {
+      const hit = matchRules(commandTextOf(ev));   // OS exec 쉘 명령에도 위험도 룰 적용(재사용)
+      if (hit) { severity = hit.severity; category = hit.category; }
     }
     ev._sev = severity; ev._cat = category;
     return { severity, category };
@@ -279,7 +293,7 @@
       if (pair) return classifyAction(pair).severity;
       return ev.is_error ? "warning" : "info";
     }
-    if (ev.kind === "tool_use") return classifyAction(ev).severity;
+    if (ev.kind === "tool_use" || ev.kind === "process_exec") return classifyAction(ev).severity;
     return "info";
   }
   function categoryOf(ev) {
@@ -287,7 +301,7 @@
       const pair = pairedToolUse(ev);
       return pair ? classifyAction(pair).category : "";
     }
-    if (ev.kind === "tool_use") return classifyAction(ev).category;
+    if (ev.kind === "tool_use" || ev.kind === "process_exec") return classifyAction(ev).category;
     return "";
   }
 
@@ -312,13 +326,15 @@
     const catChip = cat ? `<span class="cat-chip">${esc(cat)}</span>` : "";
     const ctrBadge = ev.container_id
       ? `<span class="container-badge" title="container: ${esc(ev.container_id)}">🐳 ${esc(ev.container_id)}</span>` : "";
+    const srcBadge = ev.source === "os-exec"
+      ? `<span class="src-badge" title="OS 레벨 쉘/프로세스 감사(transcript 비의존)">🐚 OS</span>` : "";
     const sidechain = ev.is_sidechain ? `<span class="sidechain">↳ sub</span>` : "";
     const sess = ev.session_id ? esc(ev.session_id).slice(0, 8) : "";
 
     el.innerHTML =
       `<div class="event__head">
          <span class="event__kind kind--${ev.kind}">${esc(ev.kind)}</span>
-         ${toolBadge}${sevBadge}${catChip}${ctrBadge}
+         ${toolBadge}${sevBadge}${catChip}${ctrBadge}${srcBadge}
          <span class="event__meta">${esc(ev.machine_id || "")} · ${sess}</span>
          ${sidechain}
          <span class="event__time">${fmtTime(ev)}</span>
