@@ -390,16 +390,8 @@
     const seg = String(p).split(/[\/\\]/).filter(Boolean).pop() || p;
     return seg.length > 20 ? seg.slice(0, 20) + "…" : seg;
   }
-  async function loadFilterOptions() {
-    // 세션 목록 = session_catalog(로컬 전체 세션, 미적재 포함) ∪ sessions 뷰(적재된 것 건수).
-    // 최근 변경순(file_mtime 또는 last_received)으로 나열. 미적재 세션은 선택 후 백필로 내용 로드.
-    const [sessRes, catRes] = await Promise.all([
-      client.from("sessions").select("*"),
-      client.from("session_catalog").select("session_id,project,container_id,file_mtime"),
-    ]);
-    const sess = sessRes.data || [];
-    const cat = catRes.data || [];
-
+  // 세션 행 병합: session_catalog(로컬 전체, 미적재 포함) ∪ sessions 뷰(적재 건수). 최근 변경순.
+  function buildSessionRows(sess, cat) {
     const ingested = new Map();             // session_id -> sessions 뷰 행
     const machineSet = new Set(), containerSet = new Set();
     for (const s of sess) {
@@ -426,17 +418,34 @@
         add(s.session_id, s.project, s.container_id, s.event_count, Date.parse(s.last_received || 0) || 0);
     }
     const rows = Array.from(merged.values()).sort((a, b) => b.sort - a.sort);  // 최근 변경순
+    return { rows, machineSet, containerSet };
+  }
+
+  function sessionRowLabel(r) {
+    const proj = r.project ? " · " + shortProject(r.project) : "";
+    const ctr = r.container_id ? " · 🐳" + r.container_id : "";
+    const load = r.count > 0 ? `${r.count}건` : "미적재";
+    const when = r.sort ? " · " + fmtListTime(r.sort) : "";   // 최근 수정시간
+    return `${String(r.session_id).slice(0, 8)} · ${load}${when}${proj}${ctr}`;
+  }
+
+  async function fetchSessionRows() {
+    const [sessRes, catRes] = await Promise.all([
+      client.from("sessions").select("*"),
+      client.from("session_catalog").select("session_id,project,container_id,file_mtime"),
+    ]);
+    return buildSessionRows(sessRes.data || [], catRes.data || []);
+  }
+
+  async function loadFilterOptions() {
+    const { rows, machineSet, containerSet } = await fetchSessionRows();
 
     const cur = F.session.value;
     while (F.session.options.length > 1) F.session.remove(1);
     for (const r of rows) {
       const o = document.createElement("option");
       o.value = r.session_id;
-      const proj = r.project ? " · " + shortProject(r.project) : "";
-      const ctr = r.container_id ? " · 🐳" + r.container_id : "";
-      const load = r.count > 0 ? `${r.count}건` : "미적재";
-      const when = r.sort ? " · " + fmtListTime(r.sort) : "";   // 최근 수정시간
-      o.textContent = `${String(r.session_id).slice(0, 8)} · ${load}${when}${proj}${ctr}`;
+      o.textContent = sessionRowLabel(r);
       F.session.appendChild(o);
     }
     if ([...F.session.options].some((o) => o.value === cur)) F.session.value = cur;
@@ -742,6 +751,57 @@
     F.session.value = "";        // 삭제된 세션 필터 해제
     await loadFilterOptions();    // 드롭다운에서 제거
     await loadHistory();          // 피드 갱신(이 세션 사라짐)
+  });
+
+  // ---------- 세션 관리: 다중선택 일괄 삭제 ----------
+  function updateSessionSelCount() {
+    const n = document.querySelectorAll("#sessions-list .sess-chk:checked").length;
+    const cnt = document.getElementById("sessions-selcount");
+    const btn = document.getElementById("sessions-delete");
+    if (cnt) cnt.textContent = n ? `${n}개 선택됨` : "";
+    if (btn) btn.disabled = n === 0;
+  }
+  function renderSessionsList(rows) {
+    const el = document.getElementById("sessions-list");
+    if (!el) return;
+    if (!rows.length) { el.innerHTML = '<div class="health-empty">세션이 없습니다.</div>'; return; }
+    el.innerHTML = rows.map((r) =>
+      `<label class="session-row"><input type="checkbox" class="sess-chk" value="${esc(r.session_id)}" />` +
+      `<span class="sess-label">${esc(sessionRowLabel(r))}</span></label>`).join("");
+    el.querySelectorAll(".sess-chk").forEach((c) => c.addEventListener("change", updateSessionSelCount));
+    const all = document.getElementById("sessions-all"); if (all) all.checked = false;
+    updateSessionSelCount();
+  }
+  const sessModal = document.getElementById("sessions-modal");
+  const sessManageBtn = document.getElementById("manage-sessions");
+  if (sessManageBtn) sessManageBtn.addEventListener("click", async () => {
+    if (sessModal) sessModal.style.display = "flex";
+    const el = document.getElementById("sessions-list");
+    if (el) el.innerHTML = '<div class="health-empty">불러오는 중…</div>';
+    renderSessionsList((await fetchSessionRows()).rows);
+  });
+  const sessClose = document.getElementById("sessions-close");
+  if (sessClose) sessClose.addEventListener("click", () => { if (sessModal) sessModal.style.display = "none"; });
+  if (sessModal) sessModal.addEventListener("click", (e) => { if (e.target === sessModal) sessModal.style.display = "none"; });
+  const sessAll = document.getElementById("sessions-all");
+  if (sessAll) sessAll.addEventListener("change", () => {
+    document.querySelectorAll("#sessions-list .sess-chk").forEach((c) => { c.checked = sessAll.checked; });
+    updateSessionSelCount();
+  });
+  const sessDelete = document.getElementById("sessions-delete");
+  if (sessDelete) sessDelete.addEventListener("click", async () => {
+    const ids = [...document.querySelectorAll("#sessions-list .sess-chk:checked")].map((c) => c.value);
+    if (!ids.length) return;
+    if (!confirm(`선택한 ${ids.length}개 세션을 영구 삭제합니다.\n\n중앙 DB의 이벤트·목록은 즉시 삭제되고, `
+      + `수집 PC의 로컬 transcript 파일은 그 PC가 온라인일 때 삭제됩니다. 되돌릴 수 없습니다. 계속할까요?`)) return;
+    sessDelete.disabled = true; sessDelete.textContent = "삭제 중…";
+    const { error } = await client.rpc("purge_sessions", { p_session_ids: ids });
+    sessDelete.textContent = "🗑 선택 삭제";
+    if (error) { alert("삭제 실패: " + error.message); sessDelete.disabled = false; return; }
+    if (ids.includes(F.session.value)) F.session.value = "";
+    renderSessionsList((await fetchSessionRows()).rows);  // 모달 목록 갱신
+    await loadFilterOptions();                              // 드롭다운 갱신
+    await loadHistory();                                   // 피드 갱신
   });
 
   // ---------- 머신(디바이스) 헬스 + 관리 ----------

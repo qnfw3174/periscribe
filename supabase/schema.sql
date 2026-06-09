@@ -214,6 +214,30 @@ end $$;
 revoke all on function public.purge_session(text) from anon, public;
 grant execute on function public.purge_session(text) to authenticated;
 
+-- 여러 세션 일괄 삭제(웹 세션 관리에서 다중선택). purge_session 과 동일하나 배열 인자 한 번에.
+-- owner 소유분만 지운다(미소유 id는 무시) — 자기 목록에서 고른 것이므로 별도 raise 없음.
+create or replace function public.purge_sessions(p_session_ids text[])
+returns bigint language plpgsql security definer
+set search_path = public as $$
+declare deleted bigint;
+begin
+  insert into public.delete_requests (owner_id, device_id, session_id)
+  select distinct auth.uid(), d, sid from (
+    select device_id as d, session_id as sid from public.events
+      where session_id = any(p_session_ids) and owner_id = auth.uid() and device_id is not null
+    union
+    select device_id as d, session_id as sid from public.session_catalog
+      where session_id = any(p_session_ids) and owner_id = auth.uid()
+  ) s;
+  delete from public.events            where session_id = any(p_session_ids) and owner_id = auth.uid();
+  get diagnostics deleted = row_count;
+  delete from public.session_catalog   where session_id = any(p_session_ids) and owner_id = auth.uid();
+  delete from public.backfill_requests where session_id = any(p_session_ids) and owner_id = auth.uid();
+  return deleted;
+end $$;
+revoke all on function public.purge_sessions(text[]) from anon, public;
+grant execute on function public.purge_sessions(text[]) to authenticated;
+
 -- =====================================================================
 -- 2c. owner_keys — 관리자(owner)별 E2EE 키 자료. 전부 "비밀 아님"(패스프레이즈 없인 무용).
 --    public_key: owner 공개키(SPKI). 컬렉터가 per-device DEK를 이걸로 봉인.

@@ -82,6 +82,23 @@
     </div>
   </div>
 
+  <!-- 세션 관리 모달: 다중선택 일괄 삭제 -->
+  <div id="sessions-modal" class="modal" style="display:none">
+    <div class="modal-card">
+      <div class="modal-head">
+        <span>세션 관리</span>
+        <button id="sessions-close" class="btn ghost btn-sm">닫기</button>
+      </div>
+      <div class="sess-toolbar">
+        <label class="chk"><input id="sessions-all" type="checkbox" /> 전체 선택</label>
+        <span id="sessions-selcount" class="count"></span>
+        <button id="sessions-delete" class="btn ghost danger" disabled>🗑 선택 삭제</button>
+      </div>
+      <div class="sess-hint">선택한 세션을 영구 삭제합니다 — 중앙 DB는 즉시, 수집 PC 로컬 파일은 온라인일 때.</div>
+      <div id="sessions-list" class="sessions-list"></div>
+    </div>
+  </div>
+
   <!-- E2EE 암호화 게이트: 로그인 후 키 셋업/잠금해제. 운영자도 못 읽는 종단간 암호화. -->
   <div id="enc-modal" class="modal" style="display:none">
     <div class="modal-card">
@@ -162,6 +179,7 @@
     </label>
     <label class="chk"><input id="f-errors" type="checkbox" /> 실패만</label>
     <button id="reload" class="btn">다시 로드</button>
+    <button id="manage-sessions" class="btn ghost">🗂 세션 관리</button>
     <span id="count" class="count"></span>
   </section>
   </div><!-- /topstack -->
