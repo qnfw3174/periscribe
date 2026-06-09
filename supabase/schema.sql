@@ -154,6 +154,67 @@ create policy bf_insert on public.backfill_requests
 -- update/delete 정책 없음 → 함수의 service_role만 done 처리(관리자 직접 수정 불가).
 
 -- =====================================================================
+-- 2b'. delete_requests — 웹에서 "이 세션 삭제" 시 머신의 로컬 transcript 파일까지 지우라는 명령.
+--     backfill_requests 와 동일 채널: ingest 가 하트비트 응답으로 디바이스에 전달 → 컬렉터가
+--     로컬 .jsonl + 체크포인트 제거. 관리자는 직접 insert 하지 않고 purge_session() 함수가 큐잉.
+-- =====================================================================
+create table if not exists public.delete_requests (
+  id           uuid primary key default gen_random_uuid(),
+  owner_id     uuid not null references auth.users(id) on delete cascade,
+  device_id    uuid references public.devices(id) on delete cascade,
+  session_id   text not null,
+  status       text not null default 'pending',                       -- pending | done
+  requested_at timestamptz not null default now(),
+  done_at      timestamptz
+);
+create index if not exists delete_owner_idx
+  on public.delete_requests(owner_id);
+create index if not exists delete_device_pending_idx
+  on public.delete_requests(device_id, status);
+
+alter table public.delete_requests enable row level security;
+drop policy if exists del_read on public.delete_requests;
+create policy del_read on public.delete_requests
+  for select to authenticated using (owner_id = auth.uid());
+-- insert/update/delete 정책 없음 → 정의자 함수(purge_session) + service_role(ingest)만 씀.
+
+-- 세션 "완전 삭제": 중앙 DB(events/catalog/backfill) 제거 + 머신에 로컬 파일 삭제 명령 큐잉.
+-- events엔 authenticated delete RLS가 없어 security definer 로 소유 검증 후 지운다(purge_device 패턴).
+create or replace function public.purge_session(p_session_id text)
+returns bigint language plpgsql security definer
+set search_path = public as $$
+declare deleted bigint;
+begin
+  -- 소유 검증: 이 세션의 events 또는 catalog 한 행이라도 owner 것이어야 함.
+  if not exists (
+    select 1 from public.events         where session_id = p_session_id and owner_id = auth.uid()
+    union all
+    select 1 from public.session_catalog where session_id = p_session_id and owner_id = auth.uid()
+  ) then
+    raise exception 'session not found or not owner';
+  end if;
+
+  -- 삭제 "전에" 디바이스별 로컬 삭제 명령 큐잉(events ∪ catalog → 미적재 세션도 도달).
+  insert into public.delete_requests (owner_id, device_id, session_id)
+  select auth.uid(), d, p_session_id
+  from (
+    select device_id as d from public.events
+      where session_id = p_session_id and owner_id = auth.uid() and device_id is not null
+    union
+    select device_id as d from public.session_catalog
+      where session_id = p_session_id and owner_id = auth.uid()
+  ) s;
+
+  delete from public.events            where session_id = p_session_id and owner_id = auth.uid();
+  get diagnostics deleted = row_count;
+  delete from public.session_catalog   where session_id = p_session_id and owner_id = auth.uid();
+  delete from public.backfill_requests where session_id = p_session_id and owner_id = auth.uid();
+  return deleted;
+end $$;
+revoke all on function public.purge_session(text) from anon, public;
+grant execute on function public.purge_session(text) to authenticated;
+
+-- =====================================================================
 -- 2c. owner_keys — 관리자(owner)별 E2EE 키 자료. 전부 "비밀 아님"(패스프레이즈 없인 무용).
 --    public_key: owner 공개키(SPKI). 컬렉터가 per-device DEK를 이걸로 봉인.
 --    wrapped_private_key: 개인키(PKCS8)를 패스프레이즈 유도 KEK로 봉인(envelope).

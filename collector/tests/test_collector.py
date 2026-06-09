@@ -153,3 +153,23 @@ def test_saved_checkpoint_resumes_from_offset(tmp_path):
     c = make_collector(tmp_path, backfill=0, checkpoint_data={f: {"offset": 7, "inode": 123}})
     t = c._ensure_tailer(f, first_run=True)
     assert t.offset == 7  # 저장된 오프셋 우선(backfill/EOF 무시)
+
+
+def test_delete_session_removes_file_and_checkpoint(tmp_path):
+    # 세션 삭제 명령: 로컬 transcript 파일 + 체크포인트 제거(부활 방지).
+    sid = "11111111-2222-3333-4444-555555555555"
+    f = make_file(tmp_path / f"{sid}.jsonl", 3)
+    c = make_collector(tmp_path, checkpoint_data={f: {"offset": 5, "inode": 1}})
+    assert Path(f).exists() and c.checkpoint.get(f) is not None
+    n = c._delete_session(sid)
+    assert n == 1
+    assert not Path(f).exists()          # 파일 제거됨
+    assert c.checkpoint.get(f) is None    # 체크포인트 제거됨
+    # 멱등: 다시 호출해도 0, 예외 없음
+    assert c._delete_session(sid) == 0
+
+
+def test_delete_session_no_match_is_noop(tmp_path):
+    make_file(tmp_path / "other.jsonl", 1)
+    c = make_collector(tmp_path)
+    assert c._delete_session("nonexistent-session") == 0

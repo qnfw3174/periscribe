@@ -172,6 +172,8 @@ body.authed #login-gate { display: none; }
   font-weight: 600;
 }
 .btn.ghost:hover { background: var(--panel-2); filter: none; }
+.btn.ghost.danger { color: #ff6b6b; border-color: #5a2a2a; }
+.btn.ghost.danger:hover { background: #2a1414; }
 
 .feed { padding: 14px 16px 60px; display: flex; flex-direction: column; gap: 8px; }
 .empty { color: var(--muted); text-align: center; padding: 40px; }

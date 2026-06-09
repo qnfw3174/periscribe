@@ -547,12 +547,21 @@
   // 세션이 선택됐을 때만 "이 세션 과거 전체 불러오기"(컬렉터 백필) 버튼을 보인다.
   function updateBackfill() {
     const b = document.getElementById("backfill-session");
-    if (!b) return;
     const on = !!(F.session && F.session.value);
-    b.style.display = on ? "" : "none";
-    if (on && !b.dataset.busy) {
-      b.disabled = false;
-      b.textContent = "⟳ 이 세션 과거 전체 불러오기 (수집 PC)";
+    if (b) {
+      b.style.display = on ? "" : "none";
+      if (on && !b.dataset.busy) {
+        b.disabled = false;
+        b.textContent = "⟳ 이 세션 과거 전체 불러오기 (수집 PC)";
+      }
+    }
+    const d = document.getElementById("delete-session");
+    if (d) {
+      d.style.display = on ? "" : "none";
+      if (on && !d.dataset.busy) {
+        d.disabled = false;
+        d.textContent = "🗑 이 세션 삭제";
+      }
     }
   }
 
@@ -711,6 +720,28 @@
     }
     backfillBtn.textContent = "✓ 요청됨 — 수집 PC가 온라인이면 곧 채워집니다";
     setTimeout(() => { delete backfillBtn.dataset.busy; updateBackfill(); }, 8000);
+  });
+
+  // 세션 완전 삭제: 중앙 DB(events/목록/백필) 제거 + 수집 PC의 로컬 transcript 파일까지 삭제.
+  const deleteBtn = document.getElementById("delete-session");
+  if (deleteBtn) deleteBtn.addEventListener("click", async () => {
+    const sid = F.session.value;
+    if (!sid) return;
+    if (!confirm("이 세션을 영구 삭제합니다.\n\n중앙 DB의 이벤트·목록은 즉시 삭제되고, 수집 PC의 로컬 "
+      + "transcript 파일은 그 PC가 온라인일 때 삭제됩니다. 되돌릴 수 없습니다. 계속할까요?")) return;
+    deleteBtn.dataset.busy = "1";
+    deleteBtn.disabled = true; deleteBtn.textContent = "삭제 중…";
+    // events엔 직접 delete RLS가 없어 정의자 RPC로 소유 검증 후 일괄 삭제 + 로컬삭제 명령 큐잉.
+    const { error } = await client.rpc("purge_session", { p_session_id: sid });
+    if (error) {
+      delete deleteBtn.dataset.busy;
+      deleteBtn.disabled = false; deleteBtn.textContent = "삭제 실패: " + esc(error.message);
+      return;
+    }
+    delete deleteBtn.dataset.busy;
+    F.session.value = "";        // 삭제된 세션 필터 해제
+    await loadFilterOptions();    // 드롭다운에서 제거
+    await loadHistory();          // 피드 갱신(이 세션 사라짐)
   });
 
   // ---------- 머신(디바이스) 헬스 + 관리 ----------

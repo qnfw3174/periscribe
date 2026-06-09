@@ -186,5 +186,33 @@ Deno.serve(async (req: Request) => {
     }
   } catch (_) { /* 백필 픽업 실패는 적재 성공을 막지 않음 */ }
 
-  return json({ ok: true, inserted: events.length, backfill, enc });
+  // 삭제 요청 픽업: 이 디바이스의 pending delete_requests → done 처리하고 session_id 목록 반환.
+  // 컬렉터는 이 목록의 로컬 transcript 파일 + 체크포인트를 제거한다.
+  // [버전 게이트] delete_local 을 모르는 구 컬렉터(<0.2.0)가 요청을 소비·소실하지 않도록,
+  //   삭제를 지원하는 버전이 접속했을 때만 픽업한다. 그 전엔 pending 으로 대기.
+  let delete_local: string[] = [];
+  const mv = String(body?.machine?.version ?? "").split(".").map((n: string) => parseInt(n, 10) || 0);
+  const supportsDelete = (mv[0] || 0) > 0 || ((mv[0] || 0) === 0 && (mv[1] || 0) >= 2);
+  if (supportsDelete) {
+    try {
+      const xResp = await fetch(
+        `${SUPABASE_URL}/rest/v1/delete_requests?select=id,session_id&device_id=eq.${dev.id}&status=eq.pending`,
+        { headers: svcHeaders() },
+      );
+      if (xResp.ok) {
+        const reqs = await xResp.json();
+        if (Array.isArray(reqs) && reqs.length > 0) {
+          delete_local = reqs.map((r: any) => r.session_id).filter(Boolean);
+          const ids = reqs.map((r: any) => r.id).join(",");
+          await fetch(`${SUPABASE_URL}/rest/v1/delete_requests?id=in.(${ids})`, {
+            method: "PATCH",
+            headers: svcHeaders({ "Content-Type": "application/json", Prefer: "return=minimal" }),
+            body: JSON.stringify({ status: "done", done_at: new Date().toISOString() }),
+          });
+        }
+      }
+    } catch (_) { /* 삭제 픽업 실패는 적재 성공을 막지 않음 */ }
+  }
+
+  return json({ ok: true, inserted: events.length, backfill, delete_local, enc });
 });

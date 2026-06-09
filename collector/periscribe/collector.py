@@ -188,6 +188,33 @@ class Collector:
             self.tailers.pop(f, None)    # 다음 폴링에 offset 0부터 새 tailer 생성
         return len(targeted)
 
+    # ---- 삭제: 관리자가 웹에서 "세션 삭제" → 로컬 transcript 파일까지 제거(부활 방지) ----
+    def _apply_deletes(self, session_ids: set[str]) -> None:
+        for sid in session_ids:
+            if not sid:
+                continue
+            n = self._delete_session(sid)
+            self._log(f"[periscribe] 세션 삭제 명령 수신: session={sid} → 로컬 파일 {n}개 삭제")
+
+    def _delete_session(self, session_id: str) -> int:
+        # _reset_session 과 동일 매칭(메인 + 사이드체인 agent-* 파일). 파일 제거 + 체크포인트/타일러 정리.
+        targeted = [f for f in self.discover()
+                    if Path(f).stem == session_id or session_id in Path(f).parts]
+        removed = 0
+        for f in targeted:
+            try:
+                Path(f).unlink()
+            except FileNotFoundError:
+                pass  # 이미 없음 = 성공으로 간주
+            except OSError as e:
+                self._log(f"[periscribe] 파일 삭제 실패 {f}: {e}")
+                continue  # 체크포인트 보존(다음 기회에 재시도 여지)
+            self.checkpoint.reset(f)     # 저장 오프셋 제거
+            self.tailers.pop(f, None)    # 추적 중단
+            removed += 1
+        # 파일이 사라져 다음 하트비트에서 카탈로그가 자동 갱신됨(세션 재출현 없음).
+        return removed
+
     # ---- 로깅 (stderr + 선택적 파일, 크기 기반 로테이션) ----
     def _log(self, msg: str) -> None:
         line = msg if msg.endswith("\n") else msg + "\n"
@@ -292,10 +319,12 @@ class Collector:
                 self.sink.set_last_error(self._last_error)
             try:
                 backfill_ids: set[str] = set()
+                delete_ids: set[str] = set()
                 iter_error = None
                 resp = self._maybe_heartbeat()
                 if resp:
                     backfill_ids.update(resp.get("backfill") or [])
+                    delete_ids.update(resp.get("delete_local") or [])
                     self._handle_enc(resp)
 
                 # 암호화 필수인데 키가 아직 준비 안 됨(관리자 미설정/네트워크) → 평문 적재 금지, 보류.
@@ -317,6 +346,7 @@ class Collector:
                         total += cnt
                         if fresp:
                             backfill_ids.update(fresp.get("backfill") or [])
+                            delete_ids.update(fresp.get("delete_local") or [])
                     except SinkAuthError:
                         raise  # 아래 핸들러로 → 백오프/종료
                     except SinkError as e:
@@ -330,6 +360,8 @@ class Collector:
                     self._log(f"[periscribe] +{total} events")
                 if backfill_ids:
                     self._apply_backfill(backfill_ids)
+                if delete_ids:
+                    self._apply_deletes(delete_ids)
                 first_run = False
                 self._auth_fail = 0  # 정상 한 바퀴 → 401 카운터 리셋
 
