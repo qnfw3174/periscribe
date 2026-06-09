@@ -88,7 +88,7 @@ class Collector:
                 cursor = Path(config.checkpoint_path).with_name("sysmon_cursor.json")
                 self._audit = WinExecAudit(
                     machine_id=config.machine_id, spool_path=str(spool), cursor_path=str(cursor),
-                    log=config.os_exec_log, shell_images=config.os_exec_shell_images,
+                    log=config.os_exec_log, root_patterns=config.os_exec_root_patterns,
                     deny_images=config.os_exec_deny_images, logger=self._log,
                 )
                 self._log(f"[periscribe] OS exec 감사 활성(session={self._audit.session_id})")

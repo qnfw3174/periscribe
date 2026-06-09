@@ -327,7 +327,7 @@
     const ctrBadge = ev.container_id
       ? `<span class="container-badge" title="container: ${esc(ev.container_id)}">🐳 ${esc(ev.container_id)}</span>` : "";
     const srcBadge = ev.source === "os-exec"
-      ? `<span class="src-badge" title="OS 레벨 쉘/프로세스 감사(transcript 비의존)">🐚 OS</span>` : "";
+      ? `<span class="src-badge" title="Claude 프로세스 트리(OS 레벨) — transcript가 못 보는 하위 프로세스까지">🐚 Claude OS</span>` : "";
     const sidechain = ev.is_sidechain ? `<span class="sidechain">↳ sub</span>` : "";
     const sess = ev.session_id ? esc(ev.session_id).slice(0, 8) : "";
 

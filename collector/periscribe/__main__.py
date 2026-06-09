@@ -38,29 +38,19 @@ DEFAULT_INGEST_URL = os.environ.get(
 
 SYSMON_DOWNLOAD_URL = "https://live.sysinternals.com/Sysmon64.exe"
 
-# Sysmon 설정: 프로세스 생성(EID 1)만, 그것도 shell(또는 그 자식)만 로깅 → OS 노이즈를 소스에서 제거.
+# Sysmon 설정: 전체 ProcessCreate(EID1) + ProcessTerminate(EID5) 로깅(그 외 이벤트는 미로깅).
+# 컬렉터가 ProcessGuid 계보로 Claude(claude.exe) 서브트리만 골라 적재 → Supabase 볼륨은 Claude 것만.
+# (계보 추적엔 모든 create 가 필요 — 깊은 손자의 부모가 shell 이 아닐 수 있음.)
+# onmatch="exclude" + 규칙없음 = 전부 포함 / onmatch="include" + 규칙없음 = 미로깅.
 SYSMON_CONFIG_XML = """<Sysmon schemaversion="4.50">
   <EventFiltering>
-    <RuleGroup name="periscribe-shells" groupRelation="or">
-      <ProcessCreate onmatch="include">
-        <Image condition="end with">\\cmd.exe</Image>
-        <Image condition="end with">\\powershell.exe</Image>
-        <Image condition="end with">\\pwsh.exe</Image>
-        <Image condition="end with">\\bash.exe</Image>
-        <Image condition="end with">\\sh.exe</Image>
-        <Image condition="end with">\\wsl.exe</Image>
-        <ParentImage condition="end with">\\cmd.exe</ParentImage>
-        <ParentImage condition="end with">\\powershell.exe</ParentImage>
-        <ParentImage condition="end with">\\pwsh.exe</ParentImage>
-        <ParentImage condition="end with">\\bash.exe</ParentImage>
-        <ParentImage condition="end with">\\sh.exe</ParentImage>
-        <ParentImage condition="end with">\\wsl.exe</ParentImage>
-      </ProcessCreate>
-    </RuleGroup>
-    <ProcessTerminate onmatch="include" />
+    <ProcessCreate onmatch="exclude" />
+    <ProcessTerminate onmatch="exclude" />
     <FileCreate onmatch="include" />
     <NetworkConnect onmatch="include" />
     <ImageLoad onmatch="include" />
+    <RawAccessRead onmatch="include" />
+    <DnsQuery onmatch="include" />
   </EventFiltering>
 </Sysmon>
 """

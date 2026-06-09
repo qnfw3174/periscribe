@@ -60,18 +60,19 @@
 - **revoke**: 머신 관리에서 즉시. 토큰 회전 = revoke 후 새 토큰 발급·재설치.
 - **용량 주의**: 보존정책(prune)은 미포함. 누적 시 Supabase 용량/함수 호출 한도 확인.
 
-## 5b. 쉘/프로세스 OS 감사 (선택, Windows)
-transcript는 Claude Code가 한 것만 본다. **사람이 친 명령·Claude가 띄운 하위 프로세스 등 "쉘 작업 자체"**를
-잡으려면 OS 레벨 감사를 켠다(Sysmon 기반). **대상 PC마다 로컬 관리자 1회**:
+## 5b. Claude OS 감사 (선택, Windows)
+transcript는 Claude Code가 한 것만 본다(Claude 의존). **Claude가 OS에서 실제 실행한 작업**(도구가 띄운
+프로세스 + 그 하위)을 OS 레벨로 robust하게 보강한다(Sysmon 기반). **범위는 Claude 프로세스 트리로 한정 —
+사람의 일반 쉘 명령은 안 잡음**(transcript와 같은 범위). **대상 PC마다 로컬 관리자 1회**:
 ```
-periscribe.exe audit-setup        # UAC 승격 → Sysmon 설치 + shell 필터 설정 + 로그읽기 권한 + os_exec_enabled=true
+periscribe.exe audit-setup        # UAC 승격 → Sysmon 설치 + 전체 create/terminate 로깅 + 로그읽기 권한 + os_exec_enabled=true
 ```
-이후 (무관리자) 컬렉터가 Sysmon 이벤트로그를 폴링해 `source='os-exec'`, `kind='process_exec'` 이벤트를
-기존 파이프라인(E2EE 포함)으로 수집 → 웹에서 **🐚 OS** 배지로 표시(위험도 룰엔진 동일 적용). 부팅 단위로
-한 세션에 묶인다. 끄기: config `os_exec_enabled=false` (+ 선택 `Sysmon64 -u`).
-- **주의(신뢰 모델):** 커널 드라이버(Sysmon) 설치 + 컬렉터가 그 PC의 **모든 사용자 쉘 명령** 기록(메타 평문/
-  payload 암호화). exec는 고volume → Supabase 용량 주의(Sysmon 설정이 shell만 필터). 컨테이너 내부는 미지원
-  (Docker Desktop 제약; 리눅스 호스트 eBPF는 후속).
+이후 (무관리자) 컬렉터가 Sysmon 이벤트로그를 폴링, **ProcessGuid 계보로 claude.exe 서브트리만** 골라
+`source='os-exec'`, `kind='process_exec'` 이벤트를 기존 파이프라인(E2EE 포함)으로 수집 → 웹에서 **🐚 Claude OS**
+배지(위험도 룰엔진 동일 적용). Claude 실행(루트)당 한 세션으로 묶인다. 끄기: config `os_exec_enabled=false` (+ `Sysmon64 -u`).
+- **주의:** 커널 드라이버(Sysmon) 설치 필요(관리자 1회). 적재는 **Claude 것만**(프라이버시·볼륨 부담 작음); 단
+  로컬 Sysmon 로그엔 전체 프로세스가 남음(계보 추적용, 링버퍼). 컨테이너 내부는 미지원(Docker Desktop 제약;
+  리눅스 호스트 eBPF는 후속).
 
 ## 6. 보안 체크리스트
 - [ ] ingest 함수만 service_role 사용(시크릿). PC/웹/깃엔 service_role 없음.

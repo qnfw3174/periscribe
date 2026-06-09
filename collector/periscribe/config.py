@@ -35,9 +35,8 @@ class Config:
     os_exec_source: str = "sysmon"       # 'sysmon' | '4688'(후속)
     os_exec_log: str = "Microsoft-Windows-Sysmon/Operational"
     os_exec_poll_interval: float = 2.0   # exec는 고volume → transcript(0.4s)보다 느리게 폴
-    os_exec_shell_images: list = field(
-        default_factory=lambda: ["cmd.exe", "powershell.exe", "pwsh.exe",
-                                 "bash.exe", "sh.exe", "wsl.exe", "git.exe"])
+    # 캡처 범위 = Claude 프로세스 트리만. 루트 식별 패턴(image경로/cmdline 부분일치). 하위는 ProcessGuid 계보로 추적.
+    os_exec_root_patterns: list = field(default_factory=lambda: ["claude.exe", "claude-code"])
     os_exec_deny_images: list = field(default_factory=list)
 
     # 식별
