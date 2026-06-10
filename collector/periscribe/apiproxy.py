@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import apilog, proxypolicy
+from . import apilog, proxyguard, proxypolicy
 
 UPSTREAM_HOST = "api.anthropic.com"
 # 그대로 전달하면 안 되는 hop-by-hop / 우리가 재계산하는 헤더(소문자).
@@ -83,6 +83,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _proxy(self, method: str) -> None:
         self.close_connection = True
+        # 로컬 헬스 라우트: 업스트림 미전달로 즉시 200 "ok". guardian/proxy-setup 이 "프록시가 실제로
+        # serve 중인가"(소켓+우리CA TLS+핸들러 생존)를 검증하는 데 쓴다.
+        if self.path.split("?")[0].rstrip("/") == proxyguard.HEALTH_PATH:
+            self._respond_health()
+            return
         ctx: _Ctx = self.server.ctx  # type: ignore[attr-defined]
         body = self._read_body()
         is_messages = method == "POST" and self.path.split("?")[0].rstrip("/").endswith("/v1/messages")
@@ -186,6 +191,17 @@ class _Handler(BaseHTTPRequestHandler):
                 ctx.write_events(events)
             except Exception as e:  # noqa: BLE001
                 ctx.log(f"[periscribe] apilog 실패: {e}")
+
+    def _respond_health(self) -> None:
+        try:
+            self.send_response_only(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", "2")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b"ok")
+        except Exception:
+            pass
 
     def _respond_block(self, reason: str) -> None:
         payload = json.dumps({"type": "error", "error": {

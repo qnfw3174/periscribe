@@ -28,6 +28,9 @@ from .config import Config
 from .sink import IngestSink, StdoutSink
 
 TASK_NAME = "PeriscribeCollector"
+# API 프록시 failsafe guardian(컬렉터와 독립된 자동시작). 컬렉터가 죽어도 env 자동 제거가 동작해야 하므로
+# 별도 HKCU Run 키로 등록한다. proxy-setup이 등록, proxy-teardown/uninstall이 해제.
+GUARDIAN_TASK_NAME = "PeriscribeGuardian"
 
 # 배포본에 내장되는 기본 ingest 엔드포인트. 사용자는 토큰만 넣으면 된다(URL 입력 불필요).
 # 빌드/실행 시 PERISCRIBE_DEFAULT_INGEST_URL 로 덮어쓸 수 있다.
@@ -176,6 +179,30 @@ def _start_collector(config_path: Path) -> None:
     else:
         pyw = str(Path(sys.executable).with_name("pythonw.exe"))
         args = [pyw, "-m", "periscribe", "run", "-c", str(config_path)]
+    flags = 0
+    if os.name == "nt":
+        flags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
+    try:
+        subprocess.Popen(args, creationflags=flags, close_fds=True)
+    except Exception:
+        pass
+
+
+def _guardian_command(config_path: Path) -> str:
+    """guardian 자동시작 등록용 명령 문자열(HKCU Run)."""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}" guardian-run -c "{config_path}"'
+    pyw = str(Path(sys.executable).with_name("pythonw.exe"))
+    return f'"{pyw}" -m periscribe guardian-run -c "{config_path}"'
+
+
+def _start_guardian(config_path: Path) -> None:
+    """failsafe guardian 을 분리된 백그라운드 프로세스(창 없음)로 즉시 실행한다."""
+    if getattr(sys, "frozen", False):
+        args = [sys.executable, "guardian-run", "-c", str(config_path)]
+    else:
+        pyw = str(Path(sys.executable).with_name("pythonw.exe"))
+        args = [pyw, "-m", "periscribe", "guardian-run", "-c", str(config_path)]
     flags = 0
     if os.name == "nt":
         flags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
@@ -417,20 +444,8 @@ def _set_config_keys(p: Path, keys: dict) -> None:
 
 
 def _merge_claude_env(env_updates: dict) -> None:
-    p = _settings_json_path()
-    try:
-        data = json.loads(p.read_text(encoding="utf-8-sig")) if p.is_file() else {}
-        if not isinstance(data, dict):
-            data = {}
-    except Exception:
-        data = {}
-    env = data.get("env")
-    if not isinstance(env, dict):
-        env = {}
-    env.update(env_updates)
-    data["env"] = env
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    from . import proxyguard
+    proxyguard.merge_settings_env(env_updates)
 
 
 def cmd_proxy_run(argv: list[str]) -> int:
@@ -458,7 +473,8 @@ def cmd_proxy_setup(argv: list[str]) -> int:
     p.add_argument("--port", type=int, default=0)
     p.add_argument("--dry-run", action="store_true")
     a = p.parse_args(argv)
-    from . import proxycert
+    import time
+    from . import proxycert, proxyguard, proxypolicy
     cfg = Config.load(a.config)
     port = a.port or cfg.api_proxy_port
     certs = proxycert.ensure_certs(_data_dir())
@@ -469,12 +485,45 @@ def cmd_proxy_setup(argv: list[str]) -> int:
     if a.dry_run:
         print("[proxy-setup] --dry-run: 변경 없음")
         return 0
-    _merge_claude_env({"ANTHROPIC_BASE_URL": base_url, "NODE_EXTRA_CA_CERTS": certs["ca_pem"]})
+
+    # 1) 의도부터 기록(env 보다 먼저). 컬렉터/guardian 이 이 값을 보고 프록시를 살린다.
     _set_config_keys(Path(a.config), {"api_log_enabled": True, "api_proxy_port": port})
-    from . import proxypolicy
     proxypolicy.ensure_policy_file(str(_proxy_policy_path()))
+
+    # 2) 프록시를 띄울 컬렉터가 도는지 보장(프록시는 컬렉터가 supervised subprocess 로 띄움).
+    if not proxyguard.port_alive(port):
+        _start_collector(Path(a.config))
+
+    # 3) env 를 쓰기 "전에" failsafe guardian 먼저 무장(등록+기동). 이후 프록시가 죽으면 guardian 이
+    #    env 를 자동 제거해 Claude 를 직결로 돌린다 → lockout 불가.
+    _set_autostart(GUARDIAN_TASK_NAME, _guardian_command(Path(a.config)))
+    _start_guardian(Path(a.config))
+
+    # 4) 프록시가 "실제로 serve" 할 때까지 검증(최대 SETUP_WAIT_S). 헬스 프로브 성공해야만 다음으로.
+    print(f"[proxy-setup] 프록시 기동/검증 중… (최대 {int(proxyguard.SETUP_WAIT_S)}s)")
+    deadline = time.time() + proxyguard.SETUP_WAIT_S
+    healthy = False
+    while time.time() < deadline:
+        if proxyguard.port_alive(port) and proxyguard.health_probe(port, certs["ca_pem"]):
+            healthy = True
+            break
+        time.sleep(0.5)
+
+    # 5) 검증 성공 시에만 env 기록(= Claude 라우팅 전환). 실패하면 env 안 씀 → Claude 는 계속 직결로 정상.
+    if not healthy:
+        print("[proxy-setup] ⚠ 프록시가 제한시간 내 기동/응답하지 않아 env 를 쓰지 않았습니다(Claude 는 직결로 정상).",
+              file=sys.stderr)
+        print(f"[proxy-setup]   - 진단 로그: {cfg.log_file or '(config 의 log_file)'}")
+        print("[proxy-setup]   - api_log_enabled 는 켜둔 상태라, 프록시가 나중에 뜨면 guardian 이 자동으로 켭니다.")
+        print("[proxy-setup]   - 다시 시도: periscribe.exe proxy-setup")
+        return 3
+    proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": base_url, "NODE_EXTRA_CA_CERTS": certs["ca_pem"]})
+    proxyguard.write_status({"env_present": True, "proxy_healthy": True,
+                             "last_action": "readded", "reason": "proxy-setup verified",
+                             "at": time.strftime("%Y-%m-%d %H:%M:%S")})
     print("[proxy-setup] 완료 ✅  Claude를 재시작하면 로컬 프록시 경유 → 인풋/아웃풋/작업이 로깅됩니다(웹 🛰 API).")
     print(f"[proxy-setup] 통제(차단/레닥션/주입): {_proxy_policy_path()} 편집.")
+    print("[proxy-setup] 보호: 프록시가 죽으면 자동으로 직결 복구(로깅만 멈춤) 후, 살아나면 자동 재개됩니다.")
     print("[proxy-setup] 끄기: periscribe.exe proxy-teardown (Claude 재시작 시 직결 복구)")
     return 0
 
@@ -483,23 +532,94 @@ def cmd_proxy_teardown(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="periscribe proxy-teardown")
     p.add_argument("--config", default=str(_installed_config_path()))
     a = p.parse_args(argv)
-    sp = _settings_json_path()
-    try:
-        data = json.loads(sp.read_text(encoding="utf-8-sig")) if sp.is_file() else {}
-    except Exception:
-        data = {}
-    env = data.get("env") if isinstance(data, dict) else None
-    if isinstance(env, dict):
-        env.pop("ANTHROPIC_BASE_URL", None)
-        env.pop("NODE_EXTRA_CA_CERTS", None)
-        if env:
-            data["env"] = env
-        else:
-            data.pop("env", None)
-        sp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    _set_config_keys(Path(a.config), {"api_log_enabled": False})
+    from . import proxyguard
+    proxyguard.strip_proxy_env()                                  # settings.json env 에서 프록시 키 제거
+    _set_config_keys(Path(a.config), {"api_log_enabled": False})  # 의도 off → 실행 중 guardian 도 재투입 안 함
+    _del_autostart(GUARDIAN_TASK_NAME)                            # guardian 자동시작 해제
+    proxyguard.write_status({"env_present": False, "proxy_healthy": False,
+                             "last_action": "teardown", "reason": "manual teardown",
+                             "at": __import__("time").strftime("%Y-%m-%d %H:%M:%S")})
     print("[proxy-teardown] 완료. Claude 재시작 시 Anthropic 에 직접 연결됩니다.")
     return 0
+
+
+def cmd_guardian_run(argv: list[str]) -> int:
+    """failsafe guardian 루프. 컬렉터와 독립 프로세스로 상시 실행:
+      1) 컬렉터가 멈춘 듯하면 재기동(컬렉터는 자체 watchdog 이 없음),
+      2) 프록시 헬스를 보고 settings.json env 를 자동으로 빼고(직결 fail-open)/다시 넣는다(로깅 재개).
+    api_log_enabled 가 false 가 되면(=teardown) 종료한다."""
+    p = argparse.ArgumentParser(prog="periscribe guardian-run")
+    p.add_argument("-c", "--config", default=str(_installed_config_path()))
+    a = p.parse_args(argv)
+    if getattr(sys, "frozen", False):
+        _hide_console()
+    import time
+    from . import proxycert, proxyguard
+
+    def log(m: str) -> None:
+        print(m, file=sys.stderr, flush=True)
+
+    certs = proxycert.ensure_certs(_data_dir())
+    ca_pem = certs["ca_pem"]
+    log("[guardian] 시작 — API 프록시 failsafe 감시")
+    down_since: float | None = None
+    up_since: float | None = None
+    last_collector_spawn = 0.0
+
+    while True:
+        cfg = Config.load(a.config)
+        if not bool(getattr(cfg, "api_log_enabled", False)):
+            log("[guardian] api_log_enabled=false → 종료")
+            return 0
+        port = cfg.api_proxy_port
+        base_url = f"https://127.0.0.1:{port}"
+        now = time.time()
+
+        # 1) 컬렉터 watchdog(휴리스틱: log_file mtime 이 오래 정지 → 재기동). 프록시는 컬렉터가 살린다.
+        if _collector_stale(cfg) and now - last_collector_spawn > 30.0:
+            last_collector_spawn = now
+            _start_collector(Path(a.config))
+            log("[guardian] 컬렉터가 멈춘 듯 → 재기동")
+
+        # 2) 프록시 헬스 + 히스테리시스 타이머
+        healthy = proxyguard.port_alive(port) and proxyguard.health_probe(port, ca_pem)
+        if healthy:
+            up_since = up_since or now
+            down_since = None
+        else:
+            down_since = down_since or now
+            up_since = None
+
+        # 3) failsafe: 오래 죽었으면 env 제거(직결), 오래 살았는데 env 없으면 재투입(로깅 재개)
+        env_present = proxyguard.env_has_proxy()
+        if env_present and not healthy and down_since and (now - down_since) > proxyguard.DOWN_GRACE_S:
+            proxyguard.strip_proxy_env()
+            proxyguard.write_status({"env_present": False, "proxy_healthy": False,
+                                     "last_action": "stripped", "reason": "proxy down > grace",
+                                     "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+            log("[guardian] 프록시 비정상 지속 → env 제거(Claude 직결 fail-open). 로깅 일시중지.")
+        elif (not env_present) and healthy and up_since and (now - up_since) > proxyguard.UP_STABLE_S:
+            proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": base_url, "NODE_EXTRA_CA_CERTS": ca_pem})
+            proxyguard.write_status({"env_present": True, "proxy_healthy": True,
+                                     "last_action": "readded", "reason": "proxy healthy > stable",
+                                     "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+            log("[guardian] 프록시 정상 복구 → env 재투입. 로깅 재개.")
+
+        time.sleep(proxyguard.GUARDIAN_TICK_S)
+
+
+def _collector_stale(cfg) -> bool:
+    """컬렉터가 멈췄는지 휴리스틱 판정. log_file mtime 이 heartbeat 의 3배(최소 90s) 넘게 정지면 stale.
+    log_file 미설정이면 판정 불가로 False(섣부른 재기동 방지)."""
+    lf = getattr(cfg, "log_file", "") or ""
+    if not lf:
+        return False
+    try:
+        age = __import__("time").time() - os.path.getmtime(lf)
+    except OSError:
+        return True  # 로그가 아직 없음 = 아직 한 번도 안 돌았을 수 있음 → 기동 유도
+    threshold = max(90.0, 3.0 * float(getattr(cfg, "heartbeat_interval", 30.0) or 30.0))
+    return age > threshold
 
 
 # ---------------- setup (대화형) ----------------
@@ -546,6 +666,7 @@ def cmd_uninstall(argv: list[str]) -> int:
     p.add_argument("--task-name", default=TASK_NAME)
     a = p.parse_args(argv)
     _del_autostart(a.task_name)
+    _del_autostart(GUARDIAN_TASK_NAME)  # API 프록시 failsafe guardian 자동시작도 함께 해제
     if os.name == "nt":
         # 옛 schtasks 설치 흔적도 제거(있으면).
         subprocess.call(["schtasks", "/End", "/TN", a.task_name],
@@ -746,6 +867,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_proxy_setup(argv[1:])
     if argv and argv[0] == "proxy-teardown":
         return cmd_proxy_teardown(argv[1:])
+    if argv and argv[0] == "guardian-run":
+        return cmd_guardian_run(argv[1:])
 
     if not argv:
         # 단일 exe 더블클릭: GUI 설치 창(설치돼 있으면 재설치 안내도 GUI에서).

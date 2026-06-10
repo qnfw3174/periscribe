@@ -100,6 +100,7 @@ class Collector:
         self._proxy_proc: Optional[subprocess.Popen] = None
         self._proxy_last_spawn = 0.0
         self._proxy_enabled = bool(getattr(config, "api_log_enabled", False)) and os.name == "nt"
+        self._proxy_status_check = 0.0  # 프록시 pause 상태 표면화 throttle
 
     # ---- E2EE: 하트비트 응답의 공개키 처리 + DEK 부트스트랩 ----
     def _handle_enc(self, resp: dict[str, Any] | None) -> None:
@@ -254,6 +255,25 @@ class Collector:
             self._log("[periscribe] API 프록시 기동")
         except Exception as e:  # noqa: BLE001
             self._log(f"[periscribe] API 프록시 기동 실패: {e}")
+
+    # 프록시 failsafe 가 env 를 빼서(직결 fail-open) API 로깅이 일시중지된 상태를 헬스바에 표면화.
+    # guardian 이 env 를 빼면 settings.json 에 ANTHROPIC_BASE_URL 이 사라진다 → 그걸 감지해 last_error 로 알림.
+    _PROXY_PAUSE_MSG = "API 로깅 일시중지 — 프록시 비정상(자동 직결)"
+
+    def _update_proxy_pause_status(self) -> None:
+        now = time.time()
+        if now - self._proxy_status_check < 5.0:
+            return
+        self._proxy_status_check = now
+        try:
+            from . import proxyguard
+            paused = not proxyguard.env_has_proxy()
+        except Exception:
+            return
+        if paused:
+            self._last_error = self._PROXY_PAUSE_MSG
+        elif self._last_error == self._PROXY_PAUSE_MSG:
+            self._last_error = ""  # 복구됨(우리가 세팅한 안내만 해제; 실제 오류는 보존)
 
     def _delete_session(self, session_id: str) -> int:
         # _reset_session 과 동일 매칭(메인 + 사이드체인 agent-* 파일). 파일 제거 + 체크포인트/타일러 정리.
@@ -412,6 +432,7 @@ class Collector:
                 # API 프록시 supervise(죽었으면 재기동). spool(_apilog)은 아래 discover가 수집.
                 if self._proxy_enabled:
                     self._supervise_proxy()
+                    self._update_proxy_pause_status()
 
                 files = self.discover()
                 total = 0
