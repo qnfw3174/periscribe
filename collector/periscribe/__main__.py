@@ -172,10 +172,40 @@ def _del_autostart(name: str) -> None:
         pass
 
 
+def _get_autostart(name: str) -> str | None:
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_QUERY_VALUE) as k:
+            v, _t = winreg.QueryValueEx(k, name)
+            return str(v) or None
+    except OSError:
+        return None
+
+
+def _collector_exe() -> Path | None:
+    """컬렉터/guardian 을 띄울 '설치된' periscribe.exe 경로 해석(frozen 전용 의미).
+    periscribe-proxy.exe 같은 별도 배포 exe 안에서 _start_collector/_guardian_command 가
+    sys.executable(다운로드 폴더의 자기 자신)을 autostart 에 박는 일을 막는다."""
+    if getattr(sys, "frozen", False) and Path(sys.executable).stem.lower() == "periscribe":
+        return Path(sys.executable)
+    cmd = _get_autostart(TASK_NAME)  # 설치 시 등록된 Run 값: "{exe}" run -c "{config}"
+    if cmd:
+        s = cmd.strip()
+        exe = s[1:s.index('"', 1)] if s.startswith('"') and s.count('"') >= 2 else s.split(" ", 1)[0]
+        p = Path(exe)
+        # dev 설치(pythonw -m periscribe ...) 값은 거부
+        if p.is_file() and p.suffix.lower() == ".exe" and "periscribe" in p.stem.lower():
+            return p
+    cand = _data_dir() / "periscribe.exe"
+    if cand.is_file():
+        return cand
+    return None
+
+
 def _start_collector(config_path: Path) -> None:
     """수집기를 분리된 백그라운드 프로세스(창 없음)로 즉시 실행한다."""
     if getattr(sys, "frozen", False):
-        args = [sys.executable, "run", "-c", str(config_path)]
+        args = [str(_collector_exe() or sys.executable), "run", "-c", str(config_path)]
     else:
         pyw = str(Path(sys.executable).with_name("pythonw.exe"))
         args = [pyw, "-m", "periscribe", "run", "-c", str(config_path)]
@@ -191,7 +221,7 @@ def _start_collector(config_path: Path) -> None:
 def _guardian_command(config_path: Path) -> str:
     """guardian 자동시작 등록용 명령 문자열(HKCU Run)."""
     if getattr(sys, "frozen", False):
-        return f'"{sys.executable}" guardian-run -c "{config_path}"'
+        return f'"{_collector_exe() or sys.executable}" guardian-run -c "{config_path}"'
     pyw = str(Path(sys.executable).with_name("pythonw.exe"))
     return f'"{pyw}" -m periscribe guardian-run -c "{config_path}"'
 
@@ -199,7 +229,7 @@ def _guardian_command(config_path: Path) -> str:
 def _start_guardian(config_path: Path) -> None:
     """failsafe guardian 을 분리된 백그라운드 프로세스(창 없음)로 즉시 실행한다."""
     if getattr(sys, "frozen", False):
-        args = [sys.executable, "guardian-run", "-c", str(config_path)]
+        args = [str(_collector_exe() or sys.executable), "guardian-run", "-c", str(config_path)]
     else:
         pyw = str(Path(sys.executable).with_name("pythonw.exe"))
         args = [pyw, "-m", "periscribe", "guardian-run", "-c", str(config_path)]
@@ -976,6 +1006,35 @@ def gui_proxy() -> int:
     ACCENT, ACCENT_H, INK = "#6ea8fe", "#5a93e6", "#0b0d11"
     MUTED, OKC, WARN, ERRC = "#8a93a6", "#4cd585", "#ffcc66", "#ff6b6b"
 
+    if not _is_installed():
+        # 컬렉터 미설치: 토글 UI 대신 안내 창(설정 로드가 불가능해 켜기 자체가 성립 안 함)
+        app = ctk.CTk()
+        app.title("Periscribe 프록시")
+        app.resizable(False, False)
+        app.configure(fg_color="#0f1115")
+        card = ctk.CTkFrame(app, corner_radius=16, fg_color="#171a21")
+        card.pack(padx=18, pady=18, fill="both", expand=True)
+        pad = {"padx": 26}
+        ctk.CTkLabel(card, text="🛰  Claude API 프록시",
+                     font=ctk.CTkFont(size=19, weight="bold")).pack(anchor="w", pady=(22, 2), **pad)
+        ctk.CTkLabel(card, text="컬렉터가 설치되어 있지 않습니다.", text_color=ERRC,
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(10, 2), **pad)
+        ctk.CTkLabel(card, text="먼저 periscribe.exe 를 실행해 설치한 뒤 다시 열어주세요.\n"
+                                "(다운로드: 웹 대시보드 → 머신 관리)",
+                     text_color=MUTED, font=ctk.CTkFont(size=12),
+                     wraplength=360, justify="left").pack(anchor="w", pady=(0, 14), **pad)
+        ctk.CTkButton(card, text="닫기", height=40, corner_radius=10,
+                      font=ctk.CTkFont(size=14, weight="bold"),
+                      fg_color=ACCENT, hover_color=ACCENT_H, text_color=INK,
+                      command=app.destroy).pack(fill="x", pady=(4, 22), **pad)
+        app.update_idletasks()
+        x = (app.winfo_screenwidth() - app.winfo_width()) // 2
+        y = (app.winfo_screenheight() - app.winfo_height()) // 3
+        app.geometry(f"+{x}+{y}")
+        app.mainloop()
+        _exit_no_cleanup(0)  # Tk 로드 onefile의 _MEI 정리 실패 팝업 회피
+        return 0
+
     app = ctk.CTk()
     app.title("Periscribe 프록시")
     app.resizable(False, False)
@@ -1007,7 +1066,14 @@ def gui_proxy() -> int:
     ui = {"busy": False}
 
     def refresh() -> None:
-        s = _proxy_status(cfgpath)
+        try:
+            s = _proxy_status(cfgpath)
+        except Exception as e:  # noqa: BLE001 — config 손상 등: 창은 유지하고 상태만 표기
+            state_lbl.configure(text="⚠ 상태 확인 실패", text_color=ERRC)
+            detail_lbl.configure(text=str(e))
+            btn.configure(text="프록시 켜기(재시도)", fg_color=ACCENT, hover_color=ACCENT_H,
+                          text_color=INK, command=lambda: act("on"))
+            return
         label, detail = _proxy_status_text(s)
         color = {"on": OKC, "off": MUTED, "degraded": WARN}.get(s["state"], MUTED)
         if s["state"] == "degraded" and s["env_present"] and not s["healthy"]:

@@ -82,6 +82,8 @@ Claude 트래픽을 관찰). **무관리자**. 대상 PC마다:
 periscribe.exe proxy-setup        # 자체 CA 생성 + ~/.claude/settings.json env(ANTHROPIC_BASE_URL+NODE_EXTRA_CA_CERTS) 머지 + api_log_enabled=true
 # → Claude 재시작
 ```
+또는 명령어 없이 **`periscribe-proxy.exe` 더블클릭**(별도 다운로드, 무관리자) → GUI에서 켜기/끄기.
+같은 토글은 `periscribe.exe proxy-gui` / `periscribe.exe proxy on|off|status` 로도 가능. Collector 설치가 선행돼야 한다.
 - 컬렉터가 프록시를 supervised subprocess 로 띄움(죽으면 재기동). Claude가 우리 CA를 신뢰(NODE_EXTRA_CA_CERTS)해
   TLS 복호화 → 요청/응답을 `source='api'`, kind=user_prompt/assistant_text/tool_use/tool_result 로 매핑 →
   기존 파이프라인(E2EE) 수집 → 웹 **🛰 API**. 세션은 요청 metadata.user_id 의 session_id 로 묶임(한 대화=한 세션);
@@ -89,7 +91,7 @@ periscribe.exe proxy-setup        # 자체 CA 생성 + ~/.claude/settings.json e
   (전체 / 📝 Transcript / 🛰 API / 🐚 OS)** 으로 한 세션 안에서 나눠 본다.
 - **요청측 통제**: `%LOCALAPPDATA%\Periscribe\proxy-policy.json` 편집(핫리로드):
   `block_patterns`(매치 시 차단·에러 반환), `redact_patterns`(전송 전 마스킹), `inject_system`(시스템프롬프트 가드레일).
-- 끄기: `periscribe.exe proxy-teardown` → settings.json env 제거(Claude 재시작 시 Anthropic 직결).
+- 끄기: `periscribe.exe proxy-teardown` (또는 GUI의 "프록시 끄기") → settings.json env 제거(Claude 재시작 시 Anthropic 직결).
 - **주의:** Claude API 가용성이 프록시에 의존(죽으면 직결 안 됨 → supervise+fail-open로 완화). 로컬에서 API 평문을
   봄(서버 적재는 E2EE, transcript와 동일 경계). 응답 스트림은 무수정(요청측 통제만; tool_use 응답 게이팅은 후속).
 - **동시성 요건(v0.2.1+):** Claude는 병렬 툴콜/서브에이전트로 동시 연결을 일상적으로 만든다. 프록시는 backlog 128 +

@@ -45,3 +45,18 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller 실패(periscribe-agent), exit=$LA
 $agentExe = Join-Path $here "dist\periscribe-agent.exe"
 if (Test-Path $agentExe) { Write-Host "빌드 완료: $agentExe" -ForegroundColor Green }
 else { throw "빌드 실패: periscribe-agent.exe 없음" }
+
+# periscribe-proxy.exe — 프록시 ON/OFF GUI 토글 단독 배포본(더블클릭 → proxy-gui).
+# GUI(customtkinter) 번들, proxycert 의 cryptography 는 import 분석으로 자동 포함.
+python -m PyInstaller --noconfirm --onefile --windowed --name periscribe-proxy `
+  --paths "$collector" `
+  --collect-all customtkinter `
+  --distpath (Join-Path $here "dist") `
+  --workpath (Join-Path $here "build") `
+  --specpath $here `
+  (Join-Path $here "run_proxy.py")
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller 실패(periscribe-proxy), exit=$LASTEXITCODE" }
+
+$proxyExe = Join-Path $here "dist\periscribe-proxy.exe"
+if (Test-Path $proxyExe) { Write-Host "빌드 완료: $proxyExe" -ForegroundColor Green }
+else { throw "빌드 실패: periscribe-proxy.exe 없음" }
