@@ -465,42 +465,32 @@ def cmd_proxy_run(argv: list[str]) -> int:
     return 0
 
 
-def cmd_proxy_setup(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(
-        prog="periscribe proxy-setup",
-        description="Claude API 게이트웨이 켜기(인/아웃/작업 로깅 + 요청측 통제). Claude를 로컬 프록시로 경유(무관리자).")
-    p.add_argument("--config", default=str(_installed_config_path()))
-    p.add_argument("--port", type=int, default=0)
-    p.add_argument("--dry-run", action="store_true")
-    a = p.parse_args(argv)
+def _proxy_enable(config_path: Path, port: int = 0) -> tuple[bool, list[str]]:
+    """프록시 ON. 반환 (ok, 메시지줄들). lockout-safe 순서:
+    의도기록 → 컬렉터 보장 → guardian 무장(env 보다 먼저) → 헬스 검증 → 성공 시에만 env 주입.
+    cmd_proxy_setup / cmd_proxy / gui_proxy 가 공유한다."""
     import time
     from . import proxycert, proxyguard, proxypolicy
-    cfg = Config.load(a.config)
-    port = a.port or cfg.api_proxy_port
+    out: list[str] = []
+    cfg = Config.load(str(config_path))
+    port = port or cfg.api_proxy_port
     certs = proxycert.ensure_certs(_data_dir())
     base_url = f"https://127.0.0.1:{port}"
-    print(f"[proxy-setup] CA: {certs['ca_pem']}")
-    print(f"[proxy-setup] ANTHROPIC_BASE_URL = {base_url}")
-    print(f"[proxy-setup] settings: {_settings_json_path()}")
-    if a.dry_run:
-        print("[proxy-setup] --dry-run: 변경 없음")
-        return 0
 
     # 1) 의도부터 기록(env 보다 먼저). 컬렉터/guardian 이 이 값을 보고 프록시를 살린다.
-    _set_config_keys(Path(a.config), {"api_log_enabled": True, "api_proxy_port": port})
+    _set_config_keys(config_path, {"api_log_enabled": True, "api_proxy_port": port})
     proxypolicy.ensure_policy_file(str(_proxy_policy_path()))
 
     # 2) 프록시를 띄울 컬렉터가 도는지 보장(프록시는 컬렉터가 supervised subprocess 로 띄움).
     if not proxyguard.port_alive(port):
-        _start_collector(Path(a.config))
+        _start_collector(config_path)
 
     # 3) env 를 쓰기 "전에" failsafe guardian 먼저 무장(등록+기동). 이후 프록시가 죽으면 guardian 이
     #    env 를 자동 제거해 Claude 를 직결로 돌린다 → lockout 불가.
-    _set_autostart(GUARDIAN_TASK_NAME, _guardian_command(Path(a.config)))
-    _start_guardian(Path(a.config))
+    _set_autostart(GUARDIAN_TASK_NAME, _guardian_command(config_path))
+    _start_guardian(config_path)
 
     # 4) 프록시가 "실제로 serve" 할 때까지 검증(최대 SETUP_WAIT_S). 헬스 프로브 성공해야만 다음으로.
-    print(f"[proxy-setup] 프록시 기동/검증 중… (최대 {int(proxyguard.SETUP_WAIT_S)}s)")
     deadline = time.time() + proxyguard.SETUP_WAIT_S
     healthy = False
     while time.time() < deadline:
@@ -511,36 +501,160 @@ def cmd_proxy_setup(argv: list[str]) -> int:
 
     # 5) 검증 성공 시에만 env 기록(= Claude 라우팅 전환). 실패하면 env 안 씀 → Claude 는 계속 직결로 정상.
     if not healthy:
-        print("[proxy-setup] ⚠ 프록시가 제한시간 내 기동/응답하지 않아 env 를 쓰지 않았습니다(Claude 는 직결로 정상).",
-              file=sys.stderr)
-        print(f"[proxy-setup]   - 진단 로그: {cfg.log_file or '(config 의 log_file)'}")
-        print("[proxy-setup]   - api_log_enabled 는 켜둔 상태라, 프록시가 나중에 뜨면 guardian 이 자동으로 켭니다.")
-        print("[proxy-setup]   - 다시 시도: periscribe.exe proxy-setup")
-        return 3
+        out.append("⚠ 프록시가 제한시간 내 기동/응답하지 않아 env 미기록(Claude 직결로 정상).")
+        out.append(f"  의도(api_log_enabled)는 켜둠 → 프록시가 나중에 뜨면 guardian 이 자동 ON. 진단: {cfg.log_file or 'config 의 log_file'}")
+        return False, out
     proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": base_url, "NODE_EXTRA_CA_CERTS": certs["ca_pem"]})
     proxyguard.write_status({"env_present": True, "proxy_healthy": True,
-                             "last_action": "readded", "reason": "proxy-setup verified",
+                             "last_action": "readded", "reason": "proxy enable verified",
                              "at": time.strftime("%Y-%m-%d %H:%M:%S")})
-    print("[proxy-setup] 완료 ✅  Claude를 재시작하면 로컬 프록시 경유 → 인풋/아웃풋/작업이 로깅됩니다(웹 🛰 API).")
-    print(f"[proxy-setup] 통제(차단/레닥션/주입): {_proxy_policy_path()} 편집.")
-    print("[proxy-setup] 보호: 프록시가 죽으면 자동으로 직결 복구(로깅만 멈춤) 후, 살아나면 자동 재개됩니다.")
-    print("[proxy-setup] 끄기: periscribe.exe proxy-teardown (Claude 재시작 시 직결 복구)")
-    return 0
+    out.append(f"완료 ✅  Claude 재시작 시 로컬 프록시 경유 → 인풋/아웃풋/작업 로깅(웹 🛰 API). base_url={base_url}")
+    out.append(f"통제(차단/레닥션/주입): {_proxy_policy_path()} 편집. 보호: 프록시 죽으면 자동 직결 복구 후 재개.")
+    return True, out
+
+
+def _proxy_disable(config_path: Path) -> tuple[bool, list[str]]:
+    """프록시 OFF. env 부터 제거(lockout 방지) → 의도 off → guardian 자동시작 해제."""
+    import time
+    from . import proxyguard
+    proxyguard.strip_proxy_env()                                  # settings.json env 에서 프록시 키 제거
+    _set_config_keys(config_path, {"api_log_enabled": False})     # 의도 off → 실행 중 guardian 도 재투입 안 함
+    _del_autostart(GUARDIAN_TASK_NAME)                            # guardian 자동시작 해제
+    proxyguard.write_status({"env_present": False, "proxy_healthy": False,
+                             "last_action": "teardown", "reason": "manual disable",
+                             "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+    return True, ["완료. Claude 재시작 시 Anthropic 에 직접 연결됩니다(직결)."]
+
+
+def _proxy_status(config_path: Path) -> dict:
+    """현재 프록시 상태 판정. state: 'on'(env+헬스OK) / 'degraded'(전환중·프록시 비정상) / 'off'(직결)."""
+    from . import proxyguard
+    cfg = Config.load(str(config_path))
+    port = cfg.api_proxy_port
+    env_present = proxyguard.env_has_proxy()
+    alive = proxyguard.port_alive(port)
+    healthy = False
+    if alive:
+        try:
+            from . import proxycert
+            healthy = proxyguard.health_probe(port, proxycert.ensure_certs(_data_dir())["ca_pem"])
+        except Exception:
+            healthy = False
+    intent = bool(getattr(cfg, "api_log_enabled", False))
+    if env_present and healthy:
+        state = "on"
+    elif env_present or intent:
+        state = "degraded"   # env 가 죽은 프록시를 가리키거나(위험), 의도 on 인데 아직 직결(fail-open)
+    else:
+        state = "off"
+    st = proxyguard.read_status()
+    return {"state": state, "port": port, "env_present": env_present, "port_alive": alive,
+            "healthy": healthy, "intent": intent, "base_url": f"https://127.0.0.1:{port}",
+            "last_action": st.get("last_action")}
+
+
+def cmd_proxy_setup(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="periscribe proxy-setup",
+        description="Claude API 게이트웨이 켜기(인/아웃/작업 로깅 + 요청측 통제). Claude를 로컬 프록시로 경유(무관리자).")
+    p.add_argument("--config", default=str(_installed_config_path()))
+    p.add_argument("--port", type=int, default=0)
+    p.add_argument("--dry-run", action="store_true")
+    a = p.parse_args(argv)
+    from . import proxycert, proxyguard
+    cfg = Config.load(a.config)
+    port = a.port or cfg.api_proxy_port
+    print(f"[proxy-setup] settings: {_settings_json_path()}")
+    if a.dry_run:
+        certs = proxycert.ensure_certs(_data_dir())
+        print(f"[proxy-setup] CA: {certs['ca_pem']}")
+        print(f"[proxy-setup] ANTHROPIC_BASE_URL = https://127.0.0.1:{port}")
+        print("[proxy-setup] --dry-run: 변경 없음")
+        return 0
+    print(f"[proxy-setup] 프록시 기동/검증 중… (최대 {int(proxyguard.SETUP_WAIT_S)}s)")
+    ok, lines = _proxy_enable(Path(a.config), port)
+    for ln in lines:
+        print(f"[proxy-setup] {ln}")
+    if ok:
+        print("[proxy-setup] 끄기: periscribe.exe proxy-teardown (또는 proxy off)")
+    return 0 if ok else 3
 
 
 def cmd_proxy_teardown(argv: list[str]) -> int:
     p = argparse.ArgumentParser(prog="periscribe proxy-teardown")
     p.add_argument("--config", default=str(_installed_config_path()))
     a = p.parse_args(argv)
-    from . import proxyguard
-    proxyguard.strip_proxy_env()                                  # settings.json env 에서 프록시 키 제거
-    _set_config_keys(Path(a.config), {"api_log_enabled": False})  # 의도 off → 실행 중 guardian 도 재투입 안 함
-    _del_autostart(GUARDIAN_TASK_NAME)                            # guardian 자동시작 해제
-    proxyguard.write_status({"env_present": False, "proxy_healthy": False,
-                             "last_action": "teardown", "reason": "manual teardown",
-                             "at": __import__("time").strftime("%Y-%m-%d %H:%M:%S")})
-    print("[proxy-teardown] 완료. Claude 재시작 시 Anthropic 에 직접 연결됩니다.")
+    _ok, lines = _proxy_disable(Path(a.config))
+    for ln in lines:
+        print(f"[proxy-teardown] {ln}")
     return 0
+
+
+def _proxy_status_text(s: dict) -> tuple[str, str]:
+    """status dict → (짧은 라벨, 상세 설명). CLI/GUI 공유."""
+    if s["state"] == "on":
+        return "🟢 켜짐", f"{s['base_url']} 경유로 로깅 중입니다."
+    if s["state"] == "off":
+        return "⚪ 꺼짐", "Anthropic 에 직접 연결됩니다(로깅 안 함)."
+    # degraded — 같은 state 라도 원인이 둘로 갈린다.
+    if s["env_present"] and not s["healthy"]:
+        return "🔴 직결 복구 대기", "settings 의 프록시 주소가 응답하지 않습니다. guardian 이 곧 직결로 전환합니다."
+    if s["healthy"]:
+        return "🟡 준비됨 · 직결", "프록시는 정상이나 아직 settings 에 미적용입니다. '켜기' 하면 즉시 프록시 경유로 전환됩니다."
+    return "🟡 프록시 대기 · 직결", "프록시 기동 대기 중. 지금은 Anthropic 직결입니다."
+
+
+def cmd_proxy(argv: list[str]) -> int:
+    """Claude API 프록시 on/off 토글(한 명령으로 켜고/끄기). settings.json env 를 안전하게 넣고/뺀다."""
+    p = argparse.ArgumentParser(
+        prog="periscribe proxy",
+        description="Claude API 프록시(로깅+통제) 켜기/끄기. on|off|toggle|status.")
+    p.add_argument("action", nargs="?", default="status",
+                   choices=["on", "off", "toggle", "status"])
+    p.add_argument("--config", default=str(_installed_config_path()))
+    p.add_argument("--port", type=int, default=0)
+    a = p.parse_args(argv)
+    cfgpath = Path(a.config)
+
+    if a.action == "status":
+        s = _proxy_status(cfgpath)
+        label, detail = _proxy_status_text(s)
+        print(f"[proxy] 상태: {label} — {detail}")
+        print(f"[proxy] base_url={s['base_url']}  env_present={s['env_present']}  "
+              f"port_alive={s['port_alive']}  healthy={s['healthy']}  intent={s['intent']}")
+        return 0
+
+    action = a.action
+    if action == "toggle":
+        action = "off" if _proxy_status(cfgpath)["state"] == "on" else "on"
+        print(f"[proxy] 토글 → {action}")
+
+    if action == "on":
+        ok, lines = _proxy_enable(cfgpath, a.port)
+    else:
+        ok, lines = _proxy_disable(cfgpath)
+    for ln in lines:
+        print(f"[proxy] {ln}")
+    return 0 if ok else 3
+
+
+def _create_proxy_shortcut() -> None:
+    """바탕화면에 'Periscribe 프록시' 바로가기(periscribe.exe proxy-gui) 1회 생성(frozen·Windows 전용)."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return
+    try:
+        exe = sys.executable
+        desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
+        lnk = desktop / "Periscribe 프록시.lnk"
+        if lnk.exists():
+            return
+        ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{lnk}');"
+              f"$s.TargetPath='{exe}';$s.Arguments='proxy-gui';$s.IconLocation='{exe},0';"
+              f"$s.Description='Claude API 프록시 켜기/끄기';$s.Save()")
+        subprocess.call(["powershell", "-NoProfile", "-Command", ps],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
 
 
 def cmd_guardian_run(argv: list[str]) -> int:
@@ -844,6 +958,104 @@ def _gui_setup_tk() -> int:
     return 0
 
 
+# ---------------- GUI 프록시 토글(더블클릭 런처) ----------------
+def gui_proxy() -> int:
+    """프록시 ON/OFF 토글 창(customtkinter). 현재 상태 표시 + 한 버튼 토글.
+    customtkinter 미번들이면 콘솔 CLI(periscribe proxy)로 폴백."""
+    _create_proxy_shortcut()
+    try:
+        import customtkinter as ctk
+    except Exception:
+        print("[proxy-gui] GUI(customtkinter) 미설치 → CLI 사용: periscribe proxy on|off|status")
+        return cmd_proxy(["status"])
+
+    import threading
+    cfgpath = _installed_config_path()
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("blue")
+    ACCENT, ACCENT_H, INK = "#6ea8fe", "#5a93e6", "#0b0d11"
+    MUTED, OKC, WARN, ERRC = "#8a93a6", "#4cd585", "#ffcc66", "#ff6b6b"
+
+    app = ctk.CTk()
+    app.title("Periscribe 프록시")
+    app.resizable(False, False)
+    app.configure(fg_color="#0f1115")
+    card = ctk.CTkFrame(app, corner_radius=16, fg_color="#171a21")
+    card.pack(padx=18, pady=18, fill="both", expand=True)
+    pad = {"padx": 26}
+
+    ctk.CTkLabel(card, text="🛰  Claude API 프록시",
+                 font=ctk.CTkFont(size=19, weight="bold")).pack(anchor="w", pady=(22, 2), **pad)
+    ctk.CTkLabel(card, text="Claude ↔ Anthropic 트래픽 로깅 + 통제", text_color=MUTED,
+                 font=ctk.CTkFont(size=12)).pack(anchor="w", pady=(0, 16), **pad)
+
+    state_lbl = ctk.CTkLabel(card, text="상태 확인 중…", font=ctk.CTkFont(size=15, weight="bold"))
+    state_lbl.pack(anchor="w", **pad)
+    detail_lbl = ctk.CTkLabel(card, text="", text_color=MUTED, font=ctk.CTkFont(size=11),
+                              wraplength=360, justify="left")
+    detail_lbl.pack(anchor="w", pady=(2, 14), **pad)
+
+    btn = ctk.CTkButton(card, text="…", height=44, corner_radius=10,
+                        font=ctk.CTkFont(size=15, weight="bold"),
+                        fg_color=ACCENT, hover_color=ACCENT_H, text_color=INK)
+    btn.pack(fill="x", pady=(4, 14), **pad)
+
+    msg_lbl = ctk.CTkLabel(card, text="", text_color=MUTED, font=ctk.CTkFont(size=11),
+                           wraplength=360, justify="left")
+    msg_lbl.pack(anchor="w", pady=(0, 18), **pad)
+
+    ui = {"busy": False}
+
+    def refresh() -> None:
+        s = _proxy_status(cfgpath)
+        label, detail = _proxy_status_text(s)
+        color = {"on": OKC, "off": MUTED, "degraded": WARN}.get(s["state"], MUTED)
+        if s["state"] == "degraded" and s["env_present"] and not s["healthy"]:
+            color = ERRC
+        state_lbl.configure(text=label, text_color=color)
+        detail_lbl.configure(text=detail)
+        if s["state"] == "on":
+            btn.configure(text="프록시 끄기", fg_color=ERRC, hover_color="#e25b5b",
+                          text_color="#ffffff", command=lambda: act("off"))
+        else:
+            btn.configure(text=("프록시 켜기(재시도)" if s["state"] == "degraded" else "프록시 켜기"),
+                          fg_color=ACCENT, hover_color=ACCENT_H, text_color=INK,
+                          command=lambda: act("on"))
+
+    def act(action: str) -> None:
+        if ui["busy"]:
+            return
+        ui["busy"] = True
+        btn.configure(state="disabled", text="처리 중…")
+        msg_lbl.configure(text=("프록시 기동/검증 중… (최대 15초)" if action == "on" else "프록시 끄는 중…"),
+                          text_color=MUTED)
+        app.update()
+
+        def work() -> None:
+            try:
+                ok, lines = (_proxy_enable(cfgpath, 0) if action == "on" else _proxy_disable(cfgpath))
+            except Exception as e:  # noqa: BLE001
+                ok, lines = False, [f"오류: {e}"]
+
+            def done() -> None:
+                ui["busy"] = False
+                btn.configure(state="normal")
+                msg_lbl.configure(text="  ".join(lines), text_color=(OKC if ok else ERRC))
+                refresh()
+            app.after(0, done)
+        threading.Thread(target=work, daemon=True).start()
+
+    refresh()
+    app.update_idletasks()
+    w, h = app.winfo_width(), app.winfo_height()
+    x = (app.winfo_screenwidth() - w) // 2
+    y = (app.winfo_screenheight() - h) // 3
+    app.geometry(f"+{x}+{y}")
+    app.mainloop()
+    _exit_no_cleanup(0)  # Tk 로드 onefile의 _MEI 정리 실패 팝업 회피
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # windowed(콘솔 없는) 빌드에선 stdout/stderr가 None일 수 있어 print()가 죽는다. 더미로 대체.
     if sys.stdout is None:
@@ -876,6 +1088,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_proxy_setup(argv[1:])
     if argv and argv[0] == "proxy-teardown":
         return cmd_proxy_teardown(argv[1:])
+    if argv and argv[0] == "proxy":
+        return cmd_proxy(argv[1:])
+    if argv and argv[0] == "proxy-gui":
+        return gui_proxy()
     if argv and argv[0] == "guardian-run":
         return cmd_guardian_run(argv[1:])
 
