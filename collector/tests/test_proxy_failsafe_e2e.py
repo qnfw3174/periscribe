@@ -134,6 +134,8 @@ def test_guardian_strips_then_readds(tmp_path, monkeypatch, stub_os_side_effects
     # 3) 프록시가 계속 죽어 있으므로 grace(1s) 넘기면 env 자동 제거 → Claude 직결
     assert _wait(lambda: proxyguard.env_has_proxy() is False, timeout=6.0), "env가 자동 제거되지 않음"
     assert proxyguard.read_status().get("last_action") == "stripped"
+    # 상주 CA(NODE_EXTRA_CA_CERTS)는 유지돼야 한다 — 빼면 다음 ON 때 떠 있는 세션이 TLS 불신뢰로 끊김
+    assert proxyguard.env_has_ca() is True, "fail-open이 상주 CA까지 제거함"
 
     # 4a) 프록시 복구 → UP_STABLE 넘기면 env 자동 재투입
     httpd, _ = _start_proxy(PORT)
@@ -150,3 +152,24 @@ def test_guardian_strips_then_readds(tmp_path, monkeypatch, stub_os_side_effects
     cfg.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     t.join(timeout=5.0)
     assert not t.is_alive(), "api_log_enabled=false 인데 guardian 이 종료되지 않음"
+
+
+def test_strip_keeps_resident_ca_unless_full(tmp_path, monkeypatch):
+    """strip 기본은 BASE_URL 만 제거(상주 CA 유지·타 env 보존), include_ca=True 면 전부 제거."""
+    _isolate(monkeypatch, tmp_path)
+    from periscribe import proxyguard
+    proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": "https://127.0.0.1:8097",
+                                   "NODE_EXTRA_CA_CERTS": "C:/x/ca.pem"})
+    # 사용자가 직접 넣은 무관한 env 키는 어떤 strip 에서도 살아남아야 한다
+    proxyguard.merge_settings_env({"FOO": "bar"})
+
+    proxyguard.strip_proxy_env()
+    assert proxyguard.env_has_proxy() is False
+    assert proxyguard.env_has_ca() is True
+    env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]
+    assert env["FOO"] == "bar"
+
+    proxyguard.strip_proxy_env(include_ca=True)   # uninstall 경로
+    assert proxyguard.env_has_ca() is False
+    env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]
+    assert env == {"FOO": "bar"}

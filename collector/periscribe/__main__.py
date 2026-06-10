@@ -556,11 +556,18 @@ def _proxy_enable(config_path: Path, port: int = 0) -> tuple[bool, list[str]]:
         out.append("⚠ 프록시가 제한시간 내 기동/응답하지 않아 env 미기록(Claude 직결로 정상).")
         out.append(f"  의도(api_log_enabled)는 켜둠 → 프록시가 나중에 뜨면 guardian 이 자동 ON. 진단: {cfg.log_file or 'config 의 log_file'}")
         return False, out
+    # 핫리로드 적용 범위 판정: CA(NODE_EXTRA_CA_CERTS)는 Node 가 시작 시에만 읽는다. 이번 enable 전에
+    # 이미 상주해 있었다면 떠 있는 세션도 base_url 핫리로드만으로 무중단 전환되지만, 최초 1회는 아니다.
+    ca_was_resident = proxyguard.env_has_ca()
     proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": base_url, "NODE_EXTRA_CA_CERTS": certs["ca_pem"]})
     proxyguard.write_status({"env_present": True, "proxy_healthy": True,
                              "last_action": "readded", "reason": "proxy enable verified",
                              "at": time.strftime("%Y-%m-%d %H:%M:%S")})
-    out.append(f"완료 ✅  Claude 재시작 시 로컬 프록시 경유 → 인풋/아웃풋/작업 로깅(웹 🛰 API). base_url={base_url}")
+    if ca_was_resident:
+        out.append(f"완료 ✅  즉시 적용(실행 중 Claude 세션 포함) → 인풋/아웃풋/작업 로깅(웹 🛰 API). base_url={base_url}")
+    else:
+        out.append(f"완료 ✅  로컬 프록시 경유 → 인풋/아웃풋/작업 로깅(웹 🛰 API). base_url={base_url}")
+        out.append("  ⚠ 지금 떠 있는 Claude 세션은 이번 1회만 재시작 필요(신뢰 CA가 세션 시작 시에만 로드됨). 이후 켜기/끄기는 무중단.")
     out.append(f"통제(차단/레닥션/주입): {_proxy_policy_path()} 편집. 보호: 프록시 죽으면 자동 직결 복구 후 재개.")
     return True, out
 
@@ -569,13 +576,13 @@ def _proxy_disable(config_path: Path) -> tuple[bool, list[str]]:
     """프록시 OFF. env 부터 제거(lockout 방지) → 의도 off → guardian 자동시작 해제."""
     import time
     from . import proxyguard
-    proxyguard.strip_proxy_env()                                  # settings.json env 에서 프록시 키 제거
+    proxyguard.strip_proxy_env()       # BASE_URL 만 제거(즉시 직결). 상주 CA 는 유지 → 다음 ON 무중단
     _set_config_keys(config_path, {"api_log_enabled": False})     # 의도 off → 실행 중 guardian 도 재투입 안 함
     _del_autostart(GUARDIAN_TASK_NAME)                            # guardian 자동시작 해제
     proxyguard.write_status({"env_present": False, "proxy_healthy": False,
                              "last_action": "teardown", "reason": "manual disable",
                              "at": time.strftime("%Y-%m-%d %H:%M:%S")})
-    return True, ["완료. Claude 재시작 시 Anthropic 에 직접 연결됩니다(직결)."]
+    return True, ["완료. 실행 중인 Claude 세션 포함 즉시 Anthropic 직결로 전환됩니다(로깅 중지)."]
 
 
 def _proxy_status(config_path: Path) -> dict:
@@ -838,6 +845,10 @@ def cmd_uninstall(argv: list[str]) -> int:
     a = p.parse_args(argv)
     _del_autostart(a.task_name)
     _del_autostart(GUARDIAN_TASK_NAME)  # API 프록시 failsafe guardian 자동시작도 함께 해제
+    # 프록시 env 완전 정리(상주 CA 포함). guardian 까지 사라진 뒤 env 가 남으면 죽은 프록시를
+    # 영구히 바라보는 lockout 이 되므로 uninstall 에서는 전부 걷어낸다.
+    from . import proxyguard
+    proxyguard.strip_proxy_env(include_ca=True)
     if os.name == "nt":
         # 옛 schtasks 설치 흔적도 제거(있으면).
         subprocess.call(["schtasks", "/End", "/TN", a.task_name],

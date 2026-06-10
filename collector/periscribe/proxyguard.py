@@ -3,9 +3,13 @@
 핵심 원칙: **의도(config.api_log_enabled)와 라이브 상태(settings.json env)를 분리**한다.
 - api_log_enabled = "로깅을 원함". proxy-setup이 set, proxy-teardown만 clear. 컬렉터는 이것만 보고
   프록시를 계속 되살린다.
-- settings.json env(ANTHROPIC_BASE_URL/NODE_EXTRA_CA_CERTS) = "지금 Claude를 프록시로 라우팅".
-  guardian이 프록시 건강 상태에 따라 자동으로 넣고/뺀다. 프록시가 일정 시간 못 살아나면 env를 빼서
-  Claude를 Anthropic 직결로 돌린다(로깅만 잠깐 멈춤) → Claude는 절대 lockout 되지 않는다.
+- settings.json env(ANTHROPIC_BASE_URL) = "지금 Claude를 프록시로 라우팅". Claude는 settings env를
+  세션 도중에도 핫리로드하므로 이 키 하나로 실행 중 세션까지 무중단 전환된다. guardian이 프록시 건강
+  상태에 따라 자동으로 넣고/뺀다. 프록시가 일정 시간 못 살아나면 env를 빼서 Claude를 Anthropic 직결로
+  돌린다(로깅만 잠깐 멈춤) → Claude는 절대 lockout 되지 않는다.
+- NODE_EXTRA_CA_CERTS는 한 번 설치되면 **상주**한다(off/fail-open에도 제거 안 함). Node는 이 값을
+  프로세스 시작 시에만 읽으므로, 같이 빼버리면 다음 ON 때 이미 떠 있는 세션이 base_url만 핫리로드해
+  우리 CA를 불신뢰 → TLS 실패로 끊긴다. 완전 제거는 strip_proxy_env(include_ca=True) (uninstall 전용).
 
 표준 라이브러리만. 프록시(proxy-run)·컬렉터·guardian·CLI 어디서든 import 가능(순환 없음)."""
 
@@ -142,6 +146,13 @@ def env_has_proxy() -> bool:
     return isinstance(env, dict) and bool(env.get("ANTHROPIC_BASE_URL"))
 
 
+def env_has_ca() -> bool:
+    """settings.json env 에 NODE_EXTRA_CA_CERTS(상주 CA)가 있는가. 없으면 지금 떠 있는 Claude 세션은
+    우리 CA 없이 시작된 것 → 프록시 ON 이 그 세션엔 적용 불가(재시작 필요) 판정에 쓴다."""
+    env = _read_settings().get("env")
+    return isinstance(env, dict) and bool(env.get("NODE_EXTRA_CA_CERTS"))
+
+
 def merge_settings_env(env_updates: dict[str, str]) -> None:
     """settings.json env 에 키들을 병합(다른 키 보존). 자체 락으로 원자화."""
     with settings_lock():
@@ -154,16 +165,18 @@ def merge_settings_env(env_updates: dict[str, str]) -> None:
         _write_settings(data)
 
 
-def strip_proxy_env() -> None:
-    """settings.json env 에서 프록시 키(ANTHROPIC_BASE_URL/NODE_EXTRA_CA_CERTS)만 제거.
+def strip_proxy_env(include_ca: bool = False) -> None:
+    """settings.json env 에서 라우팅 키(ANTHROPIC_BASE_URL)만 제거 → 실행 중 Claude 도 즉시 직결.
+    NODE_EXTRA_CA_CERTS 는 기본 유지(상주 CA — 모듈 docstring 참고). 완전 정리는 include_ca=True.
     api_log_enabled(의도)는 건드리지 않는다. idempotent. 자체 락으로 원자화."""
+    keys = _ENV_KEYS if include_ca else ("ANTHROPIC_BASE_URL",)
     with settings_lock():
         data = _read_settings()
         env = data.get("env")
         if not isinstance(env, dict):
             return
         changed = False
-        for k in _ENV_KEYS:
+        for k in keys:
             if k in env:
                 env.pop(k, None)
                 changed = True
