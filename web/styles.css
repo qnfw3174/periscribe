@@ -174,7 +174,7 @@ body.authed #login-gate { display: none; }
 .dev-revoked { color: var(--error); font-size: 12px; }
 .dev-warn { color: var(--bash); cursor: help; }
 
-.loadmore-bar { text-align: center; padding: 10px 16px 0; }
+.loadmore-bar { text-align: center; padding: 10px 16px 0; background: var(--panel-2); }
 .btn.ghost {
   background: transparent; color: var(--accent); border: 1px solid var(--border);
   font-weight: 600;
