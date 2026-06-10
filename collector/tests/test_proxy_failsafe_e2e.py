@@ -1,14 +1,13 @@
-"""프록시 lockout 예방(자동 직결 fail-open) E2E.
+"""프록시 ON/OFF(컬렉터·프록시 분리, 가디언 없음) + proxyguard env 의미 E2E.
 
 실제 ~/.claude / 레지스트리 / 설치 exe 는 건드리지 않는다: HOME·LOCALAPPDATA 를 임시폴더로 격리하고,
-OS 부작용 헬퍼(_set_autostart/_start_guardian/_start_collector)만 no-op 으로 스텁한 뒤
-**실제 cmd_proxy_setup / cmd_guardian_run 코드 경로**를 돌린다. 프록시는 진짜로 띄웠다/내렸다 한다.
+OS 부작용 헬퍼(_set_autostart/_del_autostart/_start_proxy_process/_stop_proxy_process)만 no-op 으로
+스텁한 뒤 **실제 cmd_proxy_setup / _proxy_enable / _proxy_disable 코드 경로**를 돌린다.
 
-검증 시나리오(plan D):
+검증 시나리오:
   1. 프록시가 serve 못 하면 proxy-setup 이 env 를 안 쓰고 실패(exit 3)
   2. 프록시가 serve 하면 proxy-setup 이 검증 후 env 기록(exit 0)
-  3. guardian: 프록시가 grace 넘게 죽으면 env 자동 제거(직결 fail-open)
-  4. guardian: 프록시 복구되면 env 자동 재투입 / api_log_enabled=false 면 종료
+  3. OFF 는 env 를 직결로 덮어쓰기(키 삭제 아님), 상주 CA 유지 / 사용자 게이트웨이 보관·복원
 """
 
 from __future__ import annotations
@@ -65,7 +64,8 @@ def stub_os_side_effects(monkeypatch):
     from periscribe import __main__ as m
     monkeypatch.setattr(m, "_set_autostart", lambda *a, **k: None)
     monkeypatch.setattr(m, "_del_autostart", lambda *a, **k: None)
-    monkeypatch.setattr(m, "_start_guardian", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_start_proxy_process", lambda *a, **k: None)
+    monkeypatch.setattr(m, "_stop_proxy_process", lambda *a, **k: None)
     monkeypatch.setattr(m, "_start_collector", lambda *a, **k: None)
     return m
 
@@ -83,7 +83,7 @@ def test_setup_refuses_when_proxy_dead(tmp_path, monkeypatch, stub_os_side_effec
 
     assert rc == 3
     assert proxyguard.env_has_proxy() is False          # env 안 씀 → Claude 직결 정상
-    # 의도는 켜둔 상태(나중에 프록시 뜨면 guardian 이 자동 켜도록)
+    # api_log_enabled 는 기록만 됨(가디언 없음 → 자동 재시도 없음, 사용자가 'proxy on' 재실행)
     assert json.loads(cfg.read_text(encoding="utf-8"))["api_log_enabled"] is True
 
 
@@ -106,56 +106,32 @@ def test_setup_writes_env_when_proxy_healthy(tmp_path, monkeypatch, stub_os_side
         httpd.shutdown()
 
 
-def test_guardian_strips_then_readds(tmp_path, monkeypatch, stub_os_side_effects):
-    """시나리오 3+4: guardian 이 프록시 죽으면 env 제거(직결), 복구되면 재투입, 의도 off 면 종료."""
+def test_disable_overwrites_env_direct_and_stops_proxy(tmp_path, monkeypatch, stub_os_side_effects):
+    """OFF: env 를 직결로 덮어쓰기(키 삭제 아님), api_log_enabled=False, _stop_proxy_process 호출."""
     _isolate(monkeypatch, tmp_path)
     from periscribe import proxyguard
     m = stub_os_side_effects
-    # 빠른 테스트용으로 grace/주기 축소
-    monkeypatch.setattr(proxyguard, "DOWN_GRACE_S", 1.0)
-    monkeypatch.setattr(proxyguard, "UP_STABLE_S", 0.5)
-    monkeypatch.setattr(proxyguard, "GUARDIAN_TICK_S", 0.3)
+    stopped = {"n": 0}
+    monkeypatch.setattr(m, "_stop_proxy_process", lambda *a, **k: stopped.__setitem__("n", stopped["n"] + 1))
 
     PORT = 8099
     cfg = tmp_path / "config.json"
     _write_config(cfg, api_proxy_port=PORT)
-
-    # 초기 상태: 프록시는 죽어 있고 env 는 박혀 있음(=lockout 위험 상황)
+    # ON 상태 모사: env 가 우리 프록시를 가리킴
     from periscribe import proxycert
     certs = proxycert.ensure_certs(proxyguard.data_dir())
     proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": f"https://127.0.0.1:{PORT}",
                                    "NODE_EXTRA_CA_CERTS": certs["ca_pem"]})
     assert proxyguard.env_has_proxy() is True
 
-    # guardian 기동
-    t = threading.Thread(target=m.cmd_guardian_run, args=(["-c", str(cfg)],), daemon=True)
-    t.start()
-
-    # 3) 프록시가 계속 죽어 있으므로 grace(1s) 넘기면 직결 URL 로 자동 덮어씀 → Claude 직결
-    assert _wait(lambda: proxyguard.env_has_proxy() is False, timeout=6.0), "env가 직결로 전환되지 않음"
-    assert proxyguard.read_status().get("last_action") == "stripped"
-    # 키는 **남아 있고** 값이 직결이어야 한다 — 키 삭제는 실행 중 세션의 병합 env 에 반영되지 않아
-    # 죽은 프록시를 계속 바라보는 lockout 이 되기 때문(덮어쓰기만이 핫리로드됨).
+    ok, _lines = m._proxy_disable(cfg)
+    assert ok
+    assert stopped["n"] == 1                                   # 프록시 프로세스 종료 호출됨
+    assert proxyguard.env_has_proxy() is False                 # 직결
     env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]
-    assert env["ANTHROPIC_BASE_URL"] == proxyguard.DIRECT_BASE_URL
-    # 상주 CA(NODE_EXTRA_CA_CERTS)는 유지돼야 한다 — 빼면 다음 ON 때 떠 있는 세션이 TLS 불신뢰로 끊김
-    assert proxyguard.env_has_ca() is True, "fail-open이 상주 CA까지 제거함"
-
-    # 4a) 프록시 복구 → UP_STABLE 넘기면 env 자동 재투입
-    httpd, _ = _start_proxy(PORT)
-    try:
-        assert _wait(lambda: proxyguard.env_has_proxy() is True, timeout=6.0), "env가 자동 재투입되지 않음"
-        assert proxyguard.read_status().get("last_action") == "readded"
-    finally:
-        httpd.shutdown()
-
-    # 4b) 의도 off(teardown 모사) → guardian 자가종료
-    proxyguard.strip_proxy_env()
-    data = json.loads(cfg.read_text(encoding="utf-8"))
-    data["api_log_enabled"] = False
-    cfg.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    t.join(timeout=5.0)
-    assert not t.is_alive(), "api_log_enabled=false 인데 guardian 이 종료되지 않음"
+    assert env["ANTHROPIC_BASE_URL"] == proxyguard.DIRECT_BASE_URL   # 키 남고 직결값
+    assert proxyguard.env_has_ca() is True                     # 상주 CA 유지
+    assert json.loads(cfg.read_text(encoding="utf-8"))["api_log_enabled"] is False
 
 
 def test_strip_keeps_resident_ca_unless_full(tmp_path, monkeypatch):
@@ -213,7 +189,7 @@ def test_strip_noop_when_key_absent_or_foreign(tmp_path, monkeypatch):
     data = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8")) \
         if proxyguard.settings_json_path().is_file() else {}
     assert "ANTHROPIC_BASE_URL" not in (data.get("env") or {})
-    # 사용자 게이트웨이 값 → 불변(guardian fail-open 경로도 env_has_proxy=False 라 여기까지 안 옴)
+    # 사용자 게이트웨이 값 → 불변(우리 프록시가 아니므로 strip 이 건드리지 않음)
     proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": "https://corp-gw.example/v1"})
     proxyguard.strip_proxy_env()
     env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]

@@ -85,7 +85,10 @@ periscribe.exe proxy-setup        # 자체 CA 생성 + ~/.claude/settings.json e
 ```
 또는 명령어 없이 **`periscribe-proxy.exe` 더블클릭**(별도 다운로드, 무관리자) → GUI에서 켜기/끄기.
 같은 토글은 `periscribe.exe proxy-gui` / `periscribe.exe proxy on|off|status` 로도 가능. Collector 설치가 선행돼야 한다.
-- 컬렉터가 프록시를 supervised subprocess 로 띄움(죽으면 재기동). Claude가 우리 CA를 신뢰(NODE_EXTRA_CA_CERTS)해
+- **컬렉터와 프록시는 분리**(v0.2.2+): 프록시는 `proxy on` 이 직접 띄우는 **독립 프로세스**이고, 컬렉터는
+  프록시가 spool(`_apilog/*.jsonl`)에 쓴 로그를 다른 transcript 와 똑같이 수집·업로드만 한다(느슨한 파일 파이프라인).
+  컬렉터가 프록시를 띄우거나 감시하지 않으며 **가디언(failsafe)도 없다** — 프록시가 죽으면 자동 직결복구가 없으니
+  `proxy off` 로 수동 직결 전환한다. Claude가 우리 CA를 신뢰(NODE_EXTRA_CA_CERTS)해
   TLS 복호화 → 요청/응답을 `source='api'`, kind=user_prompt/assistant_text/tool_use/tool_result 로 매핑 →
   기존 파이프라인(E2EE) 수집 → 웹 **🛰 API**. 세션은 요청 metadata.user_id 의 session_id 로 묶임(한 대화=한 세션);
   이 id 는 transcript 의 session_id 와 같아 **같은 대화가 transcript·API 한 세션으로 합쳐짐** → 웹 상단 **출처 탭
@@ -97,8 +100,9 @@ periscribe.exe proxy-setup        # 자체 CA 생성 + ~/.claude/settings.json e
   세션에 반영되지 않음; 값 변경이라야 떠 있는 세션도 즉시 직결). 상주 CA(NODE_EXTRA_CA_CERTS)는 유지 —
   다음 켜기가 무중단이 되기 위한 조건. 완전 제거(상주 CA 포함)는 `periscribe.exe uninstall`(이때도
   ANTHROPIC_BASE_URL 은 직결 기본값으로 남김 — 실행 중 세션 보호).
-- **주의:** Claude API 가용성이 프록시에 의존(죽으면 직결 안 됨 → supervise+fail-open로 완화). 로컬에서 API 평문을
-  봄(서버 적재는 E2EE, transcript와 동일 경계). 응답 스트림은 무수정(요청측 통제만; tool_use 응답 게이팅은 후속).
+- **주의:** 켜진 동안 Claude API 가용성이 프록시에 의존한다 — 가디언/자동복구가 없으므로 프록시가 죽으면
+  `proxy off` 로 직결 전환해야 한다(이 PC에서 직접 토글 시 자기 세션이 잠깐 끊길 수 있어 별도 PC 테스트 권장).
+  로컬에서 API 평문을 봄(서버 적재는 E2EE, transcript와 동일 경계). 응답 스트림은 무수정(요청측 통제만; tool_use 응답 게이팅은 후속).
 - **동시성 요건(v0.2.1+):** Claude는 병렬 툴콜/서브에이전트로 동시 연결을 일상적으로 만든다. 프록시는 backlog 128 +
   TLS 핸드셰이크를 워커 스레드에서 수행해야 함(기본 backlog 5 + accept 루프 핸드셰이크였던 구버전은 동시 8연결부터
   ECONNREFUSED → Claude connection error). 회귀 테스트: `tests/test_proxy_concurrency.py`.

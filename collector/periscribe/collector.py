@@ -108,12 +108,9 @@ class Collector:
             except Exception as e:  # noqa: BLE001
                 self._log(f"[periscribe] OS exec 감사 초기화 실패: {e}")
 
-        # Claude API 게이트웨이 프록시(옵션, Windows). api_log_enabled면 별도 supervised subprocess.
-        self._proxy_proc: Optional[subprocess.Popen] = None
-        self._proxy_last_spawn = 0.0
-        self._proxy_enabled = bool(getattr(config, "api_log_enabled", False)) and os.name == "nt"
-        self._proxy_status_check = 0.0  # 프록시 pause 상태 표면화 throttle
-        self._last_alive = 0.0          # guardian 이 읽는 생존 신호(alive 파일) touch throttle
+        # Claude API 게이트웨이 프록시는 컬렉터와 **분리**됐다(컬렉터가 더는 프록시를 띄우거나 감시하지 않음).
+        # 프록시는 'proxy on/off' 가 직접 켜고/끄는 독립 프로세스다. 컬렉터는 프록시가 spool(_apilog)에 쓴
+        # API 로그 파일을 다른 transcript 와 똑같이 discover/업로드만 한다(느슨한 파일 파이프라인).
         self._last_autostart_sync = 0.0  # 자가치유 자동시작 reconcile throttle(exe 이동 추종)
 
     # ---- E2EE: 하트비트 응답의 공개키 처리 + DEK 부트스트랩 ----
@@ -237,54 +234,6 @@ class Collector:
             n = self._delete_session(sid)
             self._log(f"[periscribe] 세션 삭제 명령 수신: session={sid} → 로컬 파일 {n}개 삭제")
 
-    # ---- API 게이트웨이 프록시 supervise(별도 프로세스로 항상 떠 있게) ----
-    @staticmethod
-    def _port_alive(port: int) -> bool:
-        import socket
-        try:
-            with socket.create_connection(("127.0.0.1", int(port)), timeout=0.5):
-                return True
-        except OSError:
-            return False
-
-    def _supervise_proxy(self) -> None:
-        if self._proxy_proc is not None and self._proxy_proc.poll() is None:
-            return  # 우리가 띄운 프록시 살아있음
-        now = time.time()
-        if now - self._proxy_last_spawn < 5.0:
-            return  # 재기동 백오프
-        # 우리가 추적 안 하지만(예: 컬렉터 재시작) 포트가 이미 살아있으면 중복 기동 안 함.
-        if self._proxy_proc is None and self._port_alive(self.config.api_proxy_port):
-            return
-        self._proxy_last_spawn = now
-        cfgpath = self.config.source_path or "config.json"
-        if getattr(sys, "frozen", False):
-            args = [sys.executable, "proxy-run", "-c", cfgpath]
-        else:
-            pyw = str(Path(sys.executable).with_name("pythonw.exe"))
-            args = [pyw, "-m", "periscribe", "proxy-run", "-c", cfgpath]
-        flags = 0x00000008 | 0x08000000 if os.name == "nt" else 0  # DETACHED | NO_WINDOW
-        try:
-            self._proxy_proc = subprocess.Popen(args, env=_child_env(), creationflags=flags, close_fds=True)
-            self._log("[periscribe] API 프록시 기동")
-        except Exception as e:  # noqa: BLE001
-            self._log(f"[periscribe] API 프록시 기동 실패: {e}")
-
-    def _touch_alive(self) -> None:
-        """guardian 의 컬렉터 watchdog 이 읽을 생존 신호. 로그는 이벤트 있을 때만 써서 mtime 으로는
-        유휴 컬렉터를 죽은 걸로 오판한다 → 매 루프 alive 파일을 갱신(10s throttle)."""
-        now = time.time()
-        if now - self._last_alive < 10.0:
-            return
-        self._last_alive = now
-        try:
-            from . import proxyguard
-            p = proxyguard.data_dir() / "collector.alive"
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(str(int(now)), encoding="utf-8")
-        except Exception:
-            pass
-
     def _reconcile_autostart(self) -> None:
         """자가치유 자동시작: 실행 중 collector exe 가 옮겨졌을 때 HKCU Run 값을 현재 위치로 맞춘다(5분 throttle).
         고정 설치 위치를 두지 않으므로 '실행 중인 위치'가 단일 진실의 원천 → exe 를 어디 두든 자동시작 유지."""
@@ -297,25 +246,6 @@ class Collector:
             m._reconcile_autostart()
         except Exception:
             pass  # 보조 기능 — 실패해도 본 수집에 영향 없음
-
-    # 프록시 failsafe 가 env 를 빼서(직결 fail-open) API 로깅이 일시중지된 상태를 헬스바에 표면화.
-    # guardian 이 env 를 빼면 settings.json 에 ANTHROPIC_BASE_URL 이 사라진다 → 그걸 감지해 last_error 로 알림.
-    _PROXY_PAUSE_MSG = "API 로깅 일시중지 — 프록시 비정상(자동 직결)"
-
-    def _update_proxy_pause_status(self) -> None:
-        now = time.time()
-        if now - self._proxy_status_check < 5.0:
-            return
-        self._proxy_status_check = now
-        try:
-            from . import proxyguard
-            paused = not proxyguard.env_has_proxy()
-        except Exception:
-            return
-        if paused:
-            self._last_error = self._PROXY_PAUSE_MSG
-        elif self._last_error == self._PROXY_PAUSE_MSG:
-            self._last_error = ""  # 복구됨(우리가 세팅한 안내만 해제; 실제 오류는 보존)
 
     def _delete_session(self, session_id: str) -> int:
         # _reset_session 과 동일 매칭(메인 + 사이드체인 agent-* 파일). 파일 제거 + 체크포인트/타일러 정리.
@@ -437,7 +367,6 @@ class Collector:
                   f"redact={self.config.redact} heartbeat={self.config.heartbeat_interval}s")
 
         while self._running:
-            self._touch_alive()  # guardian 이 "컬렉터 살아있음"을 신뢰성 있게 판정하도록 매 루프 신호
             self._reconcile_autostart()  # 자가치유: exe 이동 시 자동시작 경로 추종(5분 throttle)
             # 직전 오류를 하트비트에 실어 보낸다(웹에서 머신별 표시).
             if hasattr(self.sink, "set_last_error"):
@@ -472,11 +401,6 @@ class Collector:
                             self._audit.poll()
                         except Exception as e:  # noqa: BLE001
                             self._log(f"[periscribe] OS exec 감사 폴 오류: {e}")
-
-                # API 프록시 supervise(죽었으면 재기동). spool(_apilog)은 아래 discover가 수집.
-                if self._proxy_enabled:
-                    self._supervise_proxy()
-                    self._update_proxy_pause_status()
 
                 files = self.discover()
                 total = 0
