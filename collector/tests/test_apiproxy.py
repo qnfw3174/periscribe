@@ -89,8 +89,9 @@ def test_session_from_metadata_user_id():
     body2 = {"metadata": {"user_id": uid}, "system": "X", "messages": [
         {"role": "user", "content": "turn1"}, {"role": "assistant", "content": []},
         {"role": "user", "content": "turn2 different"}]}  # 다음 턴(messages 변함) — 그래도 같은 세션
-    assert apilog.session_id_for(body1) == "api-7f2a9a96-uuid"
-    assert apilog.session_id_for(body2) == "api-7f2a9a96-uuid"  # metadata 동일 → 같은 세션
+    # 접두사 없이 raw session_id → transcript(같은 id)와 한 세션으로 병합
+    assert apilog.session_id_for(body1) == "7f2a9a96-uuid"
+    assert apilog.session_id_for(body2) == "7f2a9a96-uuid"  # metadata 동일 → 같은 세션
 
 
 def test_policy_block_redact_inject():

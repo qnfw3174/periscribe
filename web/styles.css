@@ -245,6 +245,16 @@ pre.code.bash { color: var(--bash); }
   font-size: 10.5px; color: #9fe0bb; background: #101a14;
   border: 1px solid #20543a; border-radius: 10px; padding: 1px 7px; font-weight: 600;
 }
+
+/* 로깅 출처 탭 — 같은 화면에서 transcript / API / OS 로깅을 나눠 본다 */
+.source-tabs { gap: 4px; padding: 6px 16px; background: var(--panel-2); border-bottom: 1px solid var(--border); }
+body.authed .source-tabs { display: flex; }
+.src-tab {
+  background: transparent; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 7px; padding: 5px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.src-tab:hover { color: var(--text); border-color: var(--accent); }
+.src-tab.active { color: #0b0d11; background: var(--accent); border-color: var(--accent); }
 /* 크리티컬 = 굵은 좌측 빨강 보더 + 살짝 밝은 배경(실패 결과의 본문-빨강과 구분) */
 .event.is-critical { border-left-color: var(--error) !important; border-left-width: 5px; background: #1d1517; }
 

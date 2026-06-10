@@ -193,6 +193,14 @@
             title="중앙 DB의 이벤트·목록과 수집 PC의 로컬 transcript 파일까지 영구 삭제합니다.">🗑 이 세션 삭제</button>
   </div>
 
+  <nav class="source-tabs needs-auth" id="source-tabs" role="tablist"
+       title="로깅 출처별로 나눠 봅니다. 같은 대화는 transcript와 API가 한 세션으로 묶입니다.">
+    <button class="src-tab active" data-src="all" role="tab">전체</button>
+    <button class="src-tab" data-src="transcript" role="tab">📝 Transcript</button>
+    <button class="src-tab" data-src="api" role="tab">🛰 API (프록시)</button>
+    <button class="src-tab" data-src="os-exec" role="tab">🐚 OS</button>
+  </nav>
+
   <main id="feed" class="feed needs-auth">
     <div class="empty" id="empty">설정을 확인하는 중…</div>
   </main>

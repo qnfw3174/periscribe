@@ -39,7 +39,9 @@ def session_id_for(body: dict[str, Any]) -> str:
             try:
                 sid = json.loads(uid).get("session_id")
                 if sid:
-                    return "api-" + str(sid)
+                    # 접두사 없이 raw session_id 사용 → transcript(같은 session_id)와 한 세션으로 합쳐져
+                    # 웹에서 source 탭으로 transcript ↔ API 를 같은 대화 안에서 나눠 본다.
+                    return str(sid)
             except Exception:
                 pass
     system = body.get("system", "")

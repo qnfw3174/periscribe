@@ -23,6 +23,15 @@
     errors: document.getElementById("f-errors"),
   };
 
+  // 로깅 출처 탭: all | transcript | api | os-exec. ev.source 로 분류
+  // (transcript = "claude-code" 또는 미지정, api = "api", os = "os-exec").
+  let tabSource = "all";
+  function srcGroup(ev) {
+    if (ev.source === "api") return "api";
+    if (ev.source === "os-exec") return "os-exec";
+    return "transcript";
+  }
+
   // 메모리 상의 이벤트(event_id -> event). 멱등: 중복 INSERT 무시.
   const store = new Map();
   const TRUNC = 1200; // 표시용 절단 길이(저장은 전문, 절단은 UI 단에서만)
@@ -363,6 +372,7 @@
 
   // ---------- 필터 ----------
   function passesFilter(ev) {
+    if (tabSource !== "all" && srcGroup(ev) !== tabSource) return false;
     if (F.machine.value && ev.machine_id !== F.machine.value) return false;
     if (F.session.value && ev.session_id !== F.session.value) return false;
     if (F.kind.value && ev.kind !== F.kind.value) return false;
@@ -711,6 +721,16 @@
   // 심각도/카테고리 = 클라이언트 분류 → 로드된 것에서 즉시 필터.
   [F.severity, F.category].forEach((el) =>
     el.addEventListener("change", () => render(false)));
+  // 로깅 출처 탭 = 클라이언트 필터(이미 로드된 이벤트의 source 기준).
+  const sourceTabs = document.getElementById("source-tabs");
+  if (sourceTabs) sourceTabs.addEventListener("click", (e) => {
+    const btn = e.target.closest(".src-tab");
+    if (!btn) return;
+    tabSource = btn.dataset.src || "all";
+    sourceTabs.querySelectorAll(".src-tab").forEach((t) =>
+      t.classList.toggle("active", t === btn));
+    render(false);
+  });
   document.getElementById("reload").addEventListener("click", loadHistory);
   if (loadMoreBtn) loadMoreBtn.addEventListener("click", loadMore);
 
