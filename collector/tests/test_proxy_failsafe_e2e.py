@@ -14,7 +14,6 @@ OS 부작용 헬퍼(_set_autostart/_start_guardian/_start_collector)만 no-op �
 from __future__ import annotations
 
 import json
-import ssl
 import threading
 import time
 from pathlib import Path
@@ -33,15 +32,12 @@ def _isolate(monkeypatch, tmp_path: Path) -> None:
 
 
 def _start_proxy(port: int):
-    """실제 apiproxy._Handler 로 TLS 프록시를 띄우고 httpd 핸들(stop 가능)을 돌려준다."""
+    """실서비스와 동일한 조립(_make_server)으로 TLS 프록시를 띄우고 httpd 핸들(stop 가능)을 돌려준다."""
     from periscribe import apiproxy, proxycert, proxyguard
     certs = proxycert.ensure_certs(proxyguard.data_dir())
-    httpd = apiproxy.ThreadingHTTPServer(("127.0.0.1", port), apiproxy._Handler)
-    httpd.ctx = apiproxy._Ctx("testhost", str(proxyguard.data_dir() / "spool.jsonl"),
-                              str(proxyguard.data_dir() / "policy.json"), None)
-    sslctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    sslctx.load_cert_chain(certfile=certs["server_pem"], keyfile=certs["server_key"])
-    httpd.socket = sslctx.wrap_socket(httpd.socket, server_side=True)
+    httpd = apiproxy._make_server("testhost", port, str(proxyguard.data_dir() / "spool.jsonl"),
+                                  str(proxyguard.data_dir() / "policy.json"),
+                                  certs["server_pem"], certs["server_key"])
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, certs
 

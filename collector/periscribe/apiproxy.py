@@ -218,16 +218,56 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
 
+class _ProxyServer(ThreadingHTTPServer):
+    """Claude 는 모든 API 콜마다 새 TCP+TLS 연결을 만든다(우리가 Connection: close 를 보내므로).
+    병렬 툴콜/서브에이전트면 동시 연결이 쉽게 6~8개를 넘는다 → 기본 backlog(5)면 ECONNREFUSED.
+    또 리스닝 소켓을 통째로 wrap_socket 하면 TLS 핸드셰이크가 accept 루프(단일 스레드)에서 돌아
+    반열림 커넥션 하나가 프록시 전체를 멈춘다. 그래서 backlog 를 키우고 핸드셰이크를 워커로 옮긴다."""
+
+    request_queue_size = 128
+
+    def __init__(self, addr, handler, sslctx: ssl.SSLContext) -> None:
+        self.sslctx = sslctx
+        super().__init__(addr, handler)
+
+    def finish_request(self, request, client_address):
+        # TLS 핸드셰이크를 워커 스레드에서 수행(타임아웃 한정). 실패는 조용히 폐기.
+        try:
+            request.settimeout(10.0)
+            tls = self.sslctx.wrap_socket(request, server_side=True)
+            tls.settimeout(None)
+        except Exception:
+            try:
+                request.close()
+            except OSError:
+                pass
+            return
+        try:
+            super().finish_request(tls, client_address)
+        finally:
+            try:
+                tls.close()  # FIN 즉시 보장(close-delimited 응답이 refcount 에 매달리지 않게)
+            except OSError:
+                pass
+
+
+def _make_server(machine_id: str, port: int, spool_path: str, policy_path: str,
+                 cert_pem: str, cert_key: str,
+                 logger: Optional[Callable[[str], None]] = None) -> _ProxyServer:
+    """실서비스/테스트 공용 서버 조립. 테스트도 이걸 써야 실제 backlog/핸드셰이크 경로를 검증한다."""
+    proxypolicy.ensure_policy_file(policy_path)
+    sslctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    sslctx.load_cert_chain(certfile=cert_pem, keyfile=cert_key)
+    httpd = _ProxyServer(("127.0.0.1", port), _Handler, sslctx)
+    httpd.ctx = _Ctx(machine_id, spool_path, policy_path, logger)  # type: ignore[attr-defined]
+    return httpd
+
+
 def run_proxy(machine_id: str, port: int, spool_path: str, policy_path: str,
               cert_pem: str, cert_key: str,
               logger: Optional[Callable[[str], None]] = None) -> None:
     """프록시를 127.0.0.1:<port> 에서 serve_forever. (proxy-run 서브커맨드가 호출)"""
-    proxypolicy.ensure_policy_file(policy_path)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
-    httpd.ctx = _Ctx(machine_id, spool_path, policy_path, logger)  # type: ignore[attr-defined]
-    sslctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    sslctx.load_cert_chain(certfile=cert_pem, keyfile=cert_key)
-    httpd.socket = sslctx.wrap_socket(httpd.socket, server_side=True)
+    httpd = _make_server(machine_id, port, spool_path, policy_path, cert_pem, cert_key, logger)
     if logger:
         logger(f"[periscribe] API 프록시 리슨 https://127.0.0.1:{port} (spool={spool_path})")
     httpd.serve_forever()

@@ -101,6 +101,7 @@ class Collector:
         self._proxy_last_spawn = 0.0
         self._proxy_enabled = bool(getattr(config, "api_log_enabled", False)) and os.name == "nt"
         self._proxy_status_check = 0.0  # 프록시 pause 상태 표면화 throttle
+        self._last_alive = 0.0          # guardian 이 읽는 생존 신호(alive 파일) touch throttle
 
     # ---- E2EE: 하트비트 응답의 공개키 처리 + DEK 부트스트랩 ----
     def _handle_enc(self, resp: dict[str, Any] | None) -> None:
@@ -256,6 +257,21 @@ class Collector:
         except Exception as e:  # noqa: BLE001
             self._log(f"[periscribe] API 프록시 기동 실패: {e}")
 
+    def _touch_alive(self) -> None:
+        """guardian 의 컬렉터 watchdog 이 읽을 생존 신호. 로그는 이벤트 있을 때만 써서 mtime 으로는
+        유휴 컬렉터를 죽은 걸로 오판한다 → 매 루프 alive 파일을 갱신(10s throttle)."""
+        now = time.time()
+        if now - self._last_alive < 10.0:
+            return
+        self._last_alive = now
+        try:
+            from . import proxyguard
+            p = proxyguard.data_dir() / "collector.alive"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(str(int(now)), encoding="utf-8")
+        except Exception:
+            pass
+
     # 프록시 failsafe 가 env 를 빼서(직결 fail-open) API 로깅이 일시중지된 상태를 헬스바에 표면화.
     # guardian 이 env 를 빼면 settings.json 에 ANTHROPIC_BASE_URL 이 사라진다 → 그걸 감지해 last_error 로 알림.
     _PROXY_PAUSE_MSG = "API 로깅 일시중지 — 프록시 비정상(자동 직결)"
@@ -395,6 +411,7 @@ class Collector:
                   f"redact={self.config.redact} heartbeat={self.config.heartbeat_interval}s")
 
         while self._running:
+            self._touch_alive()  # guardian 이 "컬렉터 살아있음"을 신뢰성 있게 판정하도록 매 루프 신호
             # 직전 오류를 하트비트에 실어 보낸다(웹에서 머신별 표시).
             if hasattr(self.sink, "set_last_error"):
                 self.sink.set_last_error(self._last_error)

@@ -609,17 +609,16 @@ def cmd_guardian_run(argv: list[str]) -> int:
 
 
 def _collector_stale(cfg) -> bool:
-    """컬렉터가 멈췄는지 휴리스틱 판정. log_file mtime 이 heartbeat 의 3배(최소 90s) 넘게 정지면 stale.
-    log_file 미설정이면 판정 불가로 False(섣부른 재기동 방지)."""
-    lf = getattr(cfg, "log_file", "") or ""
-    if not lf:
-        return False
+    """컬렉터 생존 판정. 컬렉터가 매 루프 갱신하는 alive 파일(collector.alive) mtime 으로 본다.
+    (로그 mtime 은 이벤트 있을 때만 갱신돼 유휴 컬렉터를 죽은 걸로 오판 → 중복 기동 유발하므로 안 씀.)
+    파일이 60s 넘게 안 갱신되거나 없으면 stale."""
+    from . import proxyguard
+    alive = proxyguard.data_dir() / "collector.alive"
     try:
-        age = __import__("time").time() - os.path.getmtime(lf)
+        age = __import__("time").time() - alive.stat().st_mtime
     except OSError:
-        return True  # 로그가 아직 없음 = 아직 한 번도 안 돌았을 수 있음 → 기동 유도
-    threshold = max(90.0, 3.0 * float(getattr(cfg, "heartbeat_interval", 30.0) or 30.0))
-    return age > threshold
+        return True  # alive 파일 없음 = 컬렉터 미가동(또는 구버전) → 기동 유도
+    return age > 60.0
 
 
 # ---------------- setup (대화형) ----------------
@@ -847,6 +846,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    # 한글 콘솔(cp949)/파일 리다이렉트에서 한글·이모지(✅ 등) print 가 UnicodeEncodeError 로 죽지 않게.
+    for _name in ("stdout", "stderr"):
+        try:
+            getattr(sys, _name).reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
     _cleanup_stale_mei()  # 묵은 _MEI 임시폴더 청소(있으면)
 

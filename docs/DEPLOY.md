@@ -92,6 +92,9 @@ periscribe.exe proxy-setup        # 자체 CA 생성 + ~/.claude/settings.json e
 - 끄기: `periscribe.exe proxy-teardown` → settings.json env 제거(Claude 재시작 시 Anthropic 직결).
 - **주의:** Claude API 가용성이 프록시에 의존(죽으면 직결 안 됨 → supervise+fail-open로 완화). 로컬에서 API 평문을
   봄(서버 적재는 E2EE, transcript와 동일 경계). 응답 스트림은 무수정(요청측 통제만; tool_use 응답 게이팅은 후속).
+- **동시성 요건(v0.2.1+):** Claude는 병렬 툴콜/서브에이전트로 동시 연결을 일상적으로 만든다. 프록시는 backlog 128 +
+  TLS 핸드셰이크를 워커 스레드에서 수행해야 함(기본 backlog 5 + accept 루프 핸드셰이크였던 구버전은 동시 8연결부터
+  ECONNREFUSED → Claude connection error). 회귀 테스트: `tests/test_proxy_concurrency.py`.
 
 ## 6. 보안 체크리스트
 - [ ] ingest 함수만 service_role 사용(시크릿). PC/웹/깃엔 service_role 없음.
