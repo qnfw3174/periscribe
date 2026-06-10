@@ -81,6 +81,7 @@ Claude 트래픽을 관찰). **무관리자**. 대상 PC마다:
 ```
 periscribe.exe proxy-setup        # 자체 CA 생성 + ~/.claude/settings.json env(ANTHROPIC_BASE_URL+NODE_EXTRA_CA_CERTS) 머지 + api_log_enabled=true
 # → 최초 1회만 Claude 재시작(CA가 세션 시작 시에만 로드됨). 이후 켜기/끄기는 떠 있는 세션도 무중단(env 핫리로드).
+# 사용자가 원래 쓰던 ANTHROPIC_BASE_URL(예: 사내 게이트웨이)이 있으면 켤 때 보관했다가 끌 때 복원.
 ```
 또는 명령어 없이 **`periscribe-proxy.exe` 더블클릭**(별도 다운로드, 무관리자) → GUI에서 켜기/끄기.
 같은 토글은 `periscribe.exe proxy-gui` / `periscribe.exe proxy on|off|status` 로도 가능. Collector 설치가 선행돼야 한다.
@@ -91,9 +92,11 @@ periscribe.exe proxy-setup        # 자체 CA 생성 + ~/.claude/settings.json e
   (전체 / 📝 Transcript / 🛰 API / 🐚 OS)** 으로 한 세션 안에서 나눠 본다.
 - **요청측 통제**: `%LOCALAPPDATA%\Periscribe\proxy-policy.json` 편집(핫리로드):
   `block_patterns`(매치 시 차단·에러 반환), `redact_patterns`(전송 전 마스킹), `inject_system`(시스템프롬프트 가드레일).
-- 끄기: `periscribe.exe proxy-teardown` (또는 GUI의 "프록시 끄기") → settings.json 에서 ANTHROPIC_BASE_URL 제거
-  (실행 중 세션 포함 즉시 직결). 상주 CA(NODE_EXTRA_CA_CERTS)는 유지 — 다음 켜기가 무중단이 되기 위한 조건.
-  완전 제거(상주 CA 포함)는 `periscribe.exe uninstall`.
+- 끄기: `periscribe.exe proxy-teardown` (또는 GUI의 "프록시 끄기") → settings.json 의 ANTHROPIC_BASE_URL 을
+  **직결 URL 로 덮어쓰기**(키 삭제가 아님 — Claude 는 settings env 를 프로세스 env 에 병합만 해서 삭제는 실행 중
+  세션에 반영되지 않음; 값 변경이라야 떠 있는 세션도 즉시 직결). 상주 CA(NODE_EXTRA_CA_CERTS)는 유지 —
+  다음 켜기가 무중단이 되기 위한 조건. 완전 제거(상주 CA 포함)는 `periscribe.exe uninstall`(이때도
+  ANTHROPIC_BASE_URL 은 직결 기본값으로 남김 — 실행 중 세션 보호).
 - **주의:** Claude API 가용성이 프록시에 의존(죽으면 직결 안 됨 → supervise+fail-open로 완화). 로컬에서 API 평문을
   봄(서버 적재는 E2EE, transcript와 동일 경계). 응답 스트림은 무수정(요청측 통제만; tool_use 응답 게이팅은 후속).
 - **동시성 요건(v0.2.1+):** Claude는 병렬 툴콜/서브에이전트로 동시 연결을 일상적으로 만든다. 프록시는 backlog 128 +

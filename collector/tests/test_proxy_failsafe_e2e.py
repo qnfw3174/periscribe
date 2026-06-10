@@ -131,9 +131,13 @@ def test_guardian_strips_then_readds(tmp_path, monkeypatch, stub_os_side_effects
     t = threading.Thread(target=m.cmd_guardian_run, args=(["-c", str(cfg)],), daemon=True)
     t.start()
 
-    # 3) 프록시가 계속 죽어 있으므로 grace(1s) 넘기면 env 자동 제거 → Claude 직결
-    assert _wait(lambda: proxyguard.env_has_proxy() is False, timeout=6.0), "env가 자동 제거되지 않음"
+    # 3) 프록시가 계속 죽어 있으므로 grace(1s) 넘기면 직결 URL 로 자동 덮어씀 → Claude 직결
+    assert _wait(lambda: proxyguard.env_has_proxy() is False, timeout=6.0), "env가 직결로 전환되지 않음"
     assert proxyguard.read_status().get("last_action") == "stripped"
+    # 키는 **남아 있고** 값이 직결이어야 한다 — 키 삭제는 실행 중 세션의 병합 env 에 반영되지 않아
+    # 죽은 프록시를 계속 바라보는 lockout 이 되기 때문(덮어쓰기만이 핫리로드됨).
+    env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]
+    assert env["ANTHROPIC_BASE_URL"] == proxyguard.DIRECT_BASE_URL
     # 상주 CA(NODE_EXTRA_CA_CERTS)는 유지돼야 한다 — 빼면 다음 ON 때 떠 있는 세션이 TLS 불신뢰로 끊김
     assert proxyguard.env_has_ca() is True, "fail-open이 상주 CA까지 제거함"
 
@@ -155,7 +159,8 @@ def test_guardian_strips_then_readds(tmp_path, monkeypatch, stub_os_side_effects
 
 
 def test_strip_keeps_resident_ca_unless_full(tmp_path, monkeypatch):
-    """strip 기본은 BASE_URL 만 제거(상주 CA 유지·타 env 보존), include_ca=True 면 전부 제거."""
+    """strip 기본은 BASE_URL 을 직결값으로 덮어쓰기(상주 CA 유지·타 env 보존), include_ca=True 면 CA 제거.
+    어느 경로든 BASE_URL 키 자체는 남는다(키 삭제는 실행 중 세션에 미반영 — lockout 방지)."""
     _isolate(monkeypatch, tmp_path)
     from periscribe import proxyguard
     proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": "https://127.0.0.1:8097",
@@ -168,8 +173,64 @@ def test_strip_keeps_resident_ca_unless_full(tmp_path, monkeypatch):
     assert proxyguard.env_has_ca() is True
     env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]
     assert env["FOO"] == "bar"
+    assert env["ANTHROPIC_BASE_URL"] == proxyguard.DIRECT_BASE_URL   # 키 존재 + 직결값
 
     proxyguard.strip_proxy_env(include_ca=True)   # uninstall 경로
     assert proxyguard.env_has_ca() is False
     env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]
-    assert env == {"FOO": "bar"}
+    assert env == {"FOO": "bar", "ANTHROPIC_BASE_URL": proxyguard.DIRECT_BASE_URL}
+
+
+def test_env_has_proxy_value_semantics(tmp_path, monkeypatch):
+    """env_has_proxy 는 '키 존재'가 아니라 '값이 우리 프록시'로 판정한다."""
+    _isolate(monkeypatch, tmp_path)
+    from periscribe import proxyguard
+    assert proxyguard.env_has_proxy() is False                       # 키 없음
+    proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": proxyguard.DIRECT_BASE_URL})
+    assert proxyguard.env_has_proxy() is False                       # 직결값
+    proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": "https://corp-gw.example/v1"})
+    assert proxyguard.env_has_proxy() is False                       # 사내 게이트웨이
+    proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": "https://127.0.0.1:8097"})
+    assert proxyguard.env_has_proxy() is True                        # 우리 프록시
+
+
+def test_strip_noop_when_key_absent_or_foreign(tmp_path, monkeypatch):
+    """키가 없으면 strip 이 키를 추가하지 않고, 우리 것이 아닌 값(사용자 게이트웨이)은 건드리지 않는다."""
+    _isolate(monkeypatch, tmp_path)
+    from periscribe import proxyguard
+    # 키 없음 → no-op(설정 파일에 키 추가 안 함)
+    proxyguard.strip_proxy_env()
+    data = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8")) \
+        if proxyguard.settings_json_path().is_file() else {}
+    assert "ANTHROPIC_BASE_URL" not in (data.get("env") or {})
+    # 사용자 게이트웨이 값 → 불변(guardian fail-open 경로도 env_has_proxy=False 라 여기까지 안 옴)
+    proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": "https://corp-gw.example/v1"})
+    proxyguard.strip_proxy_env()
+    env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]
+    assert env["ANTHROPIC_BASE_URL"] == "https://corp-gw.example/v1"
+
+
+def test_enable_saves_and_disable_restores_orig(tmp_path, monkeypatch, stub_os_side_effects):
+    """ON 이 기존 사용자 ANTHROPIC_BASE_URL 을 보관하고 OFF 가 복원한다(orig 파일 생성/삭제 포함)."""
+    _isolate(monkeypatch, tmp_path)
+    from periscribe import proxyguard
+    m = stub_os_side_effects
+    proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": "https://corp-gw.example/v1"})
+
+    PORT = 8100
+    httpd, _ = _start_proxy(PORT)
+    try:
+        cfg = tmp_path / "config.json"
+        _write_config(cfg, api_proxy_port=PORT)
+        ok, _lines = m._proxy_enable(cfg, PORT)
+        assert ok
+        env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]
+        assert env["ANTHROPIC_BASE_URL"] == f"https://127.0.0.1:{PORT}"
+        assert (proxyguard.data_dir() / "proxy-orig-env.json").is_file()
+
+        m._proxy_disable(cfg)
+        env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]
+        assert env["ANTHROPIC_BASE_URL"] == "https://corp-gw.example/v1"   # 복원
+        assert not (proxyguard.data_dir() / "proxy-orig-env.json").is_file()
+    finally:
+        httpd.shutdown()

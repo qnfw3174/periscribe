@@ -59,20 +59,16 @@ def test_request_events_and_session():
     evs = apilog.events_from_request(body1, "PC", sid)
     # 컨텍스트(<system-reminder>)·system 메시지는 제외, 실제 프롬프트만
     assert len(evs) == 1 and evs[0]["kind"] == "user_prompt" and evs[0]["payload"]["text"] == "list files"
-    up_id = evs[0]["event_id"]
 
-    # 다음 턴(tool_result). 이전 프롬프트가 재전송돼도 같은 event_id 라 dedup.
+    # 다음 턴(tool_result). 재전송된 과거 프롬프트는 trailing(마지막 assistant 이후)이 아니라 아예 미생성.
     body2 = {"system": "S", "messages": [
         {"role": "user", "content": [{"type": "text", "text": "list files"}]},
         {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
         {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "a.txt\nb.txt"}]},
     ]}
     evs2 = apilog.events_from_request(body2, "PC", sid)
-    kinds = sorted(e["kind"] for e in evs2)
-    assert kinds == ["tool_result", "user_prompt"]   # 재전송 프롬프트 + 새 tool_result
-    up2 = next(e for e in evs2 if e["kind"] == "user_prompt")
-    assert up2["event_id"] == up_id                  # 같은 프롬프트 → 같은 id(멱등 dedup)
-    tr = next(e for e in evs2 if e["kind"] == "tool_result")
+    assert [e["kind"] for e in evs2] == ["tool_result"]   # 새 tool_result 만(히스토리 미재생성)
+    tr = evs2[0]
     assert tr["tool_use_id"] == "t1" and tr["payload"]["output_full"] == "a.txt\nb.txt"
 
     # 세션 지문(폴백): 같은 system+messages[0] → 같은 세션 / 다르면 다른 세션
@@ -80,6 +76,64 @@ def test_request_events_and_session():
     b = {"system": "S", "messages": [{"role": "user", "content": "different"}]}
     assert apilog.session_id_for(a) != apilog.session_id_for(b)
     assert apilog.session_id_for(a) == apilog.session_id_for(dict(a))
+
+
+def test_trailing_delta_excludes_history():
+    """소급 로깅 회귀 방지의 핵심: 프록시 OFF 기간 턴(u1, u2)이 ON 후 첫 요청의 히스토리로
+    실려 와도 이벤트화되면 안 된다 — 마지막 assistant 이후(u3)만."""
+    body = {"messages": [
+        {"role": "user", "content": "u1 (off 기간)"},
+        {"role": "assistant", "content": [{"type": "text", "text": "a1"}]},
+        {"role": "user", "content": "u2 (off 기간)"},
+        {"role": "assistant", "content": [{"type": "text", "text": "a2"}]},
+        {"role": "user", "content": "u3 (on 이후 새 프롬프트)"},
+    ]}
+    evs = apilog.events_from_request(body, "PC", "s")
+    assert len(evs) == 1 and evs[0]["payload"]["text"] == "u3 (on 이후 새 프롬프트)"
+    texts = [e["payload"].get("text", "") for e in evs]
+    assert not any("u1" in t or "u2" in t for t in texts)
+
+
+def test_first_request_without_assistant_logs_all():
+    # 세션 첫 요청(assistant 없음) → 전체 user 처리
+    body = {"messages": [{"role": "user", "content": "first prompt"}]}
+    evs = apilog.events_from_request(body, "PC", "s")
+    assert len(evs) == 1 and evs[0]["payload"]["text"] == "first prompt"
+
+
+def test_trailing_multiple_user_messages_all_captured():
+    # 툴 실행 중 큐잉된 프롬프트: 마지막 assistant 이후 user 메시지 2개(tool_result + 새 프롬프트) 모두 캡처
+    body = {"messages": [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "out"}]},
+        {"role": "user", "content": "queued prompt"},
+    ]}
+    evs = apilog.events_from_request(body, "PC", "s")
+    kinds = sorted(e["kind"] for e in evs)
+    assert kinds == ["tool_result", "user_prompt"]
+    assert next(e for e in evs if e["kind"] == "user_prompt")["payload"]["text"] == "queued prompt"
+    assert not any("old" in str(e.get("payload")) for e in evs)
+
+
+def test_blocked_marker_when_no_trailing_text():
+    # 차단됐는데 trailing 에 user 텍스트가 없으면(정책이 과거에 매칭 등) 내용 없는 마커 1건 —
+    # 과거 내용을 소급 로깅하지 않으면서 차단 사실은 남긴다.
+    body = {"messages": [
+        {"role": "user", "content": "secret history"},
+        {"role": "assistant", "content": [{"type": "text", "text": "a"}]},
+    ]}
+    evs = apilog.events_from_request(body, "PC", "s", blocked=True, block_reason="pat")
+    assert len(evs) == 1
+    ev = evs[0]
+    assert ev["payload"]["blocked"] is True and ev["payload"]["block_reason"] == "pat"
+    assert ev["is_error"] is True
+    assert "secret history" not in ev["payload"]["text"]
+
+    # trailing 에 텍스트가 있으면 그 이벤트에 blocked 플래그가 붙고 마커는 안 생긴다
+    body2 = {"messages": [{"role": "user", "content": "bad prompt"}]}
+    evs2 = apilog.events_from_request(body2, "PC", "s", blocked=True, block_reason="pat")
+    assert len(evs2) == 1 and evs2[0]["payload"]["text"] == "bad prompt" and evs2[0]["payload"]["blocked"] is True
 
 
 def test_session_from_metadata_user_id():

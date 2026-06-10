@@ -94,12 +94,23 @@ def _is_context(text: str) -> bool:
 
 def events_from_request(body: dict[str, Any], machine_id: str, session_id: str,
                         blocked: bool = False, block_reason: str = "") -> list[dict[str, Any]]:
-    """요청 messages 의 모든 user 텍스트(프롬프트)·tool_result 를 이벤트화.
-    claude는 요청마다 전체 대화를 재전송하므로, event_id 를 '내용 해시'로 만들어 ingest 멱등 dedup 에 맡긴다
-    (같은 프롬프트는 한 번만 남음). 끼워넣은 컨텍스트 블록(_is_context)은 제외. assistant 턴은 응답에서 로깅."""
+    """요청 messages 중 '마지막 assistant 이후'(trailing) user 텍스트(프롬프트)·tool_result 만 이벤트화.
+
+    claude는 요청마다 전체 대화를 재전송하지만, 그 이전 히스토리는 이벤트화하지 않는다 — 프록시 OFF
+    기간의 턴이 ON 직후 첫 요청에서 소급 로깅되는 것을 막기 위함(OFF 기간 내용은 절대 기록 금지).
+    프록시가 켜져 있는 동안의 신규 user 콘텐츠는 반드시 어떤 요청의 trailing 으로 한 번 오므로 누락 없고,
+    event_id 는 내용 해시라 재시도/스트림 중단 재전송도 ingest 멱등 dedup 으로 안전.
+    끼워넣은 컨텍스트 블록(_is_context)은 제외. assistant 턴은 응답에서 로깅.
+    알려진 한계: ① ON 직후 첫 요청의 tool_result 는 짝 tool_use(OFF 기간)가 미기록인 고아일 수 있음(기록함)
+    ② compact 직후처럼 assistant 가 없는 요청은 전체 처리라 요약문(과거 압축본)이 기록될 수 있음."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for msg in body.get("messages") or []:
+    msgs = body.get("messages") or []
+    last_asst = -1
+    for i, m in enumerate(msgs):
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            last_asst = i
+    for msg in msgs[last_asst + 1:]:
         if not isinstance(msg, dict) or msg.get("role") != "user":
             continue
         content = msg.get("content")
@@ -123,6 +134,14 @@ def events_from_request(body: dict[str, Any], machine_id: str, session_id: str,
                     ev["is_error"] = bool(blk.get("is_error", False))
                     ev["payload"] = {"output_full": outp}
                     out.append(ev)
+    if blocked and not out:
+        # 차단됐는데 trailing 에 기록할 user 텍스트가 없으면(정책이 과거 메시지에 매칭 등)
+        # 과거 내용 없이 '차단 사실'만 마커로 남긴다.
+        eid = f"api-up-{session_id}-blk-{_sha(block_reason + str(len(msgs)))}"
+        ev = _base(machine_id, session_id, "user_prompt", eid)
+        ev["payload"] = {"text": "(요청 차단됨 — 내용 미기록)", "blocked": True, "block_reason": block_reason}
+        ev["is_error"] = True
+        out.append(ev)
     return out
 
 

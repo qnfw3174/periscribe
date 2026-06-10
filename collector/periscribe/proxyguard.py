@@ -4,9 +4,11 @@
 - api_log_enabled = "로깅을 원함". proxy-setup이 set, proxy-teardown만 clear. 컬렉터는 이것만 보고
   프록시를 계속 되살린다.
 - settings.json env(ANTHROPIC_BASE_URL) = "지금 Claude를 프록시로 라우팅". Claude는 settings env를
-  세션 도중에도 핫리로드하므로 이 키 하나로 실행 중 세션까지 무중단 전환된다. guardian이 프록시 건강
-  상태에 따라 자동으로 넣고/뺀다. 프록시가 일정 시간 못 살아나면 env를 빼서 Claude를 Anthropic 직결로
-  돌린다(로깅만 잠깐 멈춤) → Claude는 절대 lockout 되지 않는다.
+  프로세스 env에 **병합**하므로 키 추가/변경은 실행 중 세션에도 핫리로드되지만, 키 **삭제**는 이미 박힌
+  값을 못 지운다 → OFF/fail-open 은 키 제거가 아니라 **직결 URL(DIRECT_BASE_URL)로 덮어쓰기**로 한다.
+  guardian이 프록시 건강 상태에 따라 자동으로 우리 URL/직결 URL 을 오간다. 프록시가 일정 시간 못
+  살아나면 직결로 덮어써 Claude를 Anthropic 직결로 돌린다(로깅만 잠깐 멈춤) → 절대 lockout 안 됨.
+  사용자가 원래 쓰던 ANTHROPIC_BASE_URL(예: 사내 게이트웨이)은 ON 때 orig 파일에 보관, OFF 때 복원.
 - NODE_EXTRA_CA_CERTS는 한 번 설치되면 **상주**한다(off/fail-open에도 제거 안 함). Node는 이 값을
   프로세스 시작 시에만 읽으므로, 같이 빼버리면 다음 ON 때 이미 떠 있는 세션이 base_url만 핫리로드해
   우리 CA를 불신뢰 → TLS 실패로 끊긴다. 완전 제거는 strip_proxy_env(include_ca=True) (uninstall 전용).
@@ -35,7 +37,9 @@ UP_STABLE_S = 10.0                      # 프록시가 이만큼 정상이면 en
 
 _LOCK_NAME = "settings.lock"
 _STATUS_NAME = "proxy-failsafe.json"
+_ORIG_NAME = "proxy-orig-env.json"      # ON 직전 사용자의 ANTHROPIC_BASE_URL 보관(OFF 때 복원)
 _ENV_KEYS = ("ANTHROPIC_BASE_URL", "NODE_EXTRA_CA_CERTS")
+DIRECT_BASE_URL = "https://api.anthropic.com"   # apiproxy.UPSTREAM_HOST 와 동일(순환 import 회피로 자체 보유)
 
 
 # ---- 경로(자체 보유: 순환 import 회피. __main__._data_dir/_settings_json_path 와 동일 규칙) ----
@@ -140,10 +144,46 @@ def _write_settings(data: dict[str, Any]) -> None:
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def is_our_proxy_url(v: Any) -> bool:
+    """값이 우리 로컬 프록시 URL 인가. localhost 의 타사 프록시(LiteLLM 등)도 True 로 오판될 수 있으나
+    어차피 우리 CA/포트와 병행 불가라 실사용 충돌 없음."""
+    return isinstance(v, str) and v.startswith(("https://127.0.0.1", "https://localhost"))
+
+
 def env_has_proxy() -> bool:
-    """settings.json env 에 ANTHROPIC_BASE_URL 이 박혀 있는가(=Claude가 프록시로 라우팅 중)."""
+    """settings.json env 의 ANTHROPIC_BASE_URL 값이 '우리 프록시'인가(=Claude가 프록시로 라우팅 중).
+    키 존재가 아니라 값으로 판정 — OFF 는 직결 URL 덮어쓰기라 키가 남아 있기 때문."""
     env = _read_settings().get("env")
-    return isinstance(env, dict) and bool(env.get("ANTHROPIC_BASE_URL"))
+    return isinstance(env, dict) and is_our_proxy_url(env.get("ANTHROPIC_BASE_URL"))
+
+
+# ---- ON 직전 사용자 base_url 보관/복원 ----
+def _orig_path() -> Path:
+    return data_dir() / _ORIG_NAME
+
+
+def _read_orig_base_url() -> Optional[str]:
+    try:
+        d = json.loads(_orig_path().read_text(encoding="utf-8"))
+        v = d.get("ANTHROPIC_BASE_URL") if isinstance(d, dict) else None
+        return v if isinstance(v, str) and v else None
+    except Exception:
+        return None
+
+
+def _save_orig_base_url(v: str) -> None:
+    try:
+        _orig_path().parent.mkdir(parents=True, exist_ok=True)
+        _orig_path().write_text(json.dumps({"ANTHROPIC_BASE_URL": v}, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clear_orig_base_url() -> None:
+    try:
+        _orig_path().unlink()
+    except OSError:
+        pass
 
 
 def env_has_ca() -> bool:
@@ -165,21 +205,49 @@ def merge_settings_env(env_updates: dict[str, str]) -> None:
         _write_settings(data)
 
 
+def route_to_proxy(base_url: str, ca_pem: str) -> Optional[str]:
+    """Claude 를 우리 프록시로 라우팅(ON 진입점). 락 안에서 원자화:
+    기존 ANTHROPIC_BASE_URL 이 있고 우리 것이 아니면 orig 파일에 보관(OFF 때 복원용) 후
+    ANTHROPIC_BASE_URL + NODE_EXTRA_CA_CERTS 병합. 보관한 orig 값을 반환(없으면 None)."""
+    saved: Optional[str] = None
+    with settings_lock():
+        data = _read_settings()
+        env = data.get("env")
+        if not isinstance(env, dict):
+            env = {}
+        cur = env.get("ANTHROPIC_BASE_URL")
+        if isinstance(cur, str) and cur and not is_our_proxy_url(cur):
+            _save_orig_base_url(cur)
+            saved = cur
+        env.update({"ANTHROPIC_BASE_URL": base_url, "NODE_EXTRA_CA_CERTS": ca_pem})
+        data["env"] = env
+        _write_settings(data)
+    return saved
+
+
 def strip_proxy_env(include_ca: bool = False) -> None:
-    """settings.json env 에서 라우팅 키(ANTHROPIC_BASE_URL)만 제거 → 실행 중 Claude 도 즉시 직결.
-    NODE_EXTRA_CA_CERTS 는 기본 유지(상주 CA — 모듈 docstring 참고). 완전 정리는 include_ca=True.
+    """Claude 라우팅을 직결로 되돌림(OFF/fail-open). ANTHROPIC_BASE_URL 을 **제거하지 않고**
+    orig 보관값(없으면 DIRECT_BASE_URL)으로 **덮어쓴다** — Claude 는 settings env 를 프로세스 env 에
+    병합만 하므로 키 삭제는 실행 중 세션에 반영되지 않지만 값 변경은 핫리로드된다(모듈 docstring 참고).
+    키가 아예 없으면 no-op(불필요한 설정 추가 안 함). 값이 우리 프록시가 아니면(사용자가 손수 바꿈) 그대로 둠.
+    NODE_EXTRA_CA_CERTS 는 기본 유지(상주 CA). include_ca=True(uninstall)면 CA 키만 제거 —
+    이때도 ANTHROPIC_BASE_URL 은 직결값으로 남긴다(제거하면 실행 중 세션이 죽은 프록시 값을 영구 유지).
     api_log_enabled(의도)는 건드리지 않는다. idempotent. 자체 락으로 원자화."""
-    keys = _ENV_KEYS if include_ca else ("ANTHROPIC_BASE_URL",)
     with settings_lock():
         data = _read_settings()
         env = data.get("env")
         if not isinstance(env, dict):
             return
         changed = False
-        for k in keys:
-            if k in env:
-                env.pop(k, None)
-                changed = True
+        cur = env.get("ANTHROPIC_BASE_URL")
+        if isinstance(cur, str) and is_our_proxy_url(cur):
+            env["ANTHROPIC_BASE_URL"] = _read_orig_base_url() or DIRECT_BASE_URL
+            _clear_orig_base_url()
+            changed = True
+        if include_ca and "NODE_EXTRA_CA_CERTS" in env:
+            env.pop("NODE_EXTRA_CA_CERTS", None)
+            _clear_orig_base_url()
+            changed = True
         if not changed:
             return
         if env:

@@ -559,7 +559,10 @@ def _proxy_enable(config_path: Path, port: int = 0) -> tuple[bool, list[str]]:
     # 핫리로드 적용 범위 판정: CA(NODE_EXTRA_CA_CERTS)는 Node 가 시작 시에만 읽는다. 이번 enable 전에
     # 이미 상주해 있었다면 떠 있는 세션도 base_url 핫리로드만으로 무중단 전환되지만, 최초 1회는 아니다.
     ca_was_resident = proxyguard.env_has_ca()
-    proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": base_url, "NODE_EXTRA_CA_CERTS": certs["ca_pem"]})
+    saved_orig = proxyguard.route_to_proxy(base_url, certs["ca_pem"])
+    if saved_orig:
+        out.append(f"기존 ANTHROPIC_BASE_URL({saved_orig})을 보관 — 끄면 복원됩니다.")
+        out.append("  ⚠ 켜져 있는 동안 해당 게이트웨이는 우회됩니다(프록시는 api.anthropic.com 직결 중계).")
     proxyguard.write_status({"env_present": True, "proxy_healthy": True,
                              "last_action": "readded", "reason": "proxy enable verified",
                              "at": time.strftime("%Y-%m-%d %H:%M:%S")})
@@ -664,7 +667,8 @@ def _proxy_status_text(s: dict) -> tuple[str, str]:
 
 
 def cmd_proxy(argv: list[str]) -> int:
-    """Claude API 프록시 on/off 토글(한 명령으로 켜고/끄기). settings.json env 를 안전하게 넣고/뺀다."""
+    """Claude API 프록시 on/off 토글(한 명령으로 켜고/끄기). settings.json env 의 ANTHROPIC_BASE_URL 을
+    우리 프록시/직결 URL 로 안전하게 전환한다(키 삭제는 실행 중 세션에 미반영이라 항상 덮어쓰기)."""
     p = argparse.ArgumentParser(
         prog="periscribe proxy",
         description="Claude API 프록시(로깅+통제) 켜기/끄기. on|off|toggle|status.")
@@ -721,7 +725,7 @@ def _create_proxy_shortcut() -> None:
 def cmd_guardian_run(argv: list[str]) -> int:
     """failsafe guardian 루프. 컬렉터와 독립 프로세스로 상시 실행:
       1) 컬렉터가 멈춘 듯하면 재기동(컬렉터는 자체 watchdog 이 없음),
-      2) 프록시 헬스를 보고 settings.json env 를 자동으로 빼고(직결 fail-open)/다시 넣는다(로깅 재개).
+      2) 프록시 헬스를 보고 settings.json 의 ANTHROPIC_BASE_URL 을 직결로 덮어쓰고(직결 fail-open)/우리 프록시로 되돌린다(로깅 재개).
     api_log_enabled 가 false 가 되면(=teardown) 종료한다."""
     p = argparse.ArgumentParser(prog="periscribe guardian-run")
     p.add_argument("-c", "--config", default=str(_installed_config_path()))
@@ -776,9 +780,9 @@ def cmd_guardian_run(argv: list[str]) -> int:
             proxyguard.write_status({"env_present": False, "proxy_healthy": False,
                                      "last_action": "stripped", "reason": "proxy down > grace",
                                      "at": time.strftime("%Y-%m-%d %H:%M:%S")})
-            log("[guardian] 프록시 비정상 지속 → env 제거(Claude 직결 fail-open). 로깅 일시중지.")
+            log("[guardian] 프록시 비정상 지속 → 직결 URL 로 덮어씀(Claude 직결 fail-open, 실행 중 세션 포함). 로깅 일시중지.")
         elif (not env_present) and healthy and up_since and (now - up_since) > proxyguard.UP_STABLE_S:
-            proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": base_url, "NODE_EXTRA_CA_CERTS": ca_pem})
+            proxyguard.route_to_proxy(base_url, ca_pem)
             proxyguard.write_status({"env_present": True, "proxy_healthy": True,
                                      "last_action": "readded", "reason": "proxy healthy > stable",
                                      "at": time.strftime("%Y-%m-%d %H:%M:%S")})
@@ -845,10 +849,12 @@ def cmd_uninstall(argv: list[str]) -> int:
     a = p.parse_args(argv)
     _del_autostart(a.task_name)
     _del_autostart(GUARDIAN_TASK_NAME)  # API 프록시 failsafe guardian 자동시작도 함께 해제
-    # 프록시 env 완전 정리(상주 CA 포함). guardian 까지 사라진 뒤 env 가 남으면 죽은 프록시를
-    # 영구히 바라보는 lockout 이 되므로 uninstall 에서는 전부 걷어낸다.
+    # 프록시 env 정리(상주 CA 제거 + ANTHROPIC_BASE_URL 은 직결값으로 덮어씀). 키를 아예 지우면
+    # 실행 중 세션이 죽은 프록시 값을 영구 유지(병합 env 는 키 삭제 미반영)하므로 직결값을 남긴다.
     from . import proxyguard
     proxyguard.strip_proxy_env(include_ca=True)
+    print("[uninstall] settings.json 의 ANTHROPIC_BASE_URL 은 직결 기본값으로 남겨둠(실행 중 세션 보호).")
+    print("            모든 Claude 세션 종료 후에는 지워도 됩니다.")
     if os.name == "nt":
         # 옛 schtasks 설치 흔적도 제거(있으면).
         subprocess.call(["schtasks", "/End", "/TN", a.task_name],
