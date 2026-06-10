@@ -131,62 +131,6 @@ def _is_installed() -> bool:
         return False
 
 
-# ---- onedir 앱 설치 위치(추출 없는 폴더 배포) ----
-# 배포는 onedir 번들(periscribe.exe + periscribe-proxy.exe + periscribe-agent.exe + _internal/).
-# 설치 시 그 폴더를 통째로 여기로 복사하고, 자동시작/모든 spawn 은 이 고정 경로의 exe 를 쓴다.
-# onedir 이라 실행마다 _MEI 추출이 없어 컬렉터/프록시/guardian 동시 기동의 추출 경쟁이 사라진다.
-def _app_dir() -> Path:
-    return _data_dir() / "app"
-
-
-def _app_exe() -> Path:
-    return _app_dir() / "periscribe.exe"
-
-
-def _running_from_app() -> bool:
-    try:
-        if not getattr(sys, "frozen", False):
-            return False
-        return _app_dir().resolve() == Path(sys.executable).resolve().parent
-    except Exception:
-        return False
-
-
-def _stop_app_processes() -> None:
-    """설치 폴더(_app_dir) 안에서 도는 periscribe* 프로세스만 종료(파일 잠금 해제용).
-    현재 실행 중인 인스톨러(추출 zip 위치 = _app_dir 밖)는 경로가 달라 안 죽는다."""
-    if os.name != "nt":
-        return
-    app = str(_app_dir()).replace("'", "''")
-    ps = ("Get-CimInstance Win32_Process -Filter \"Name='periscribe.exe' OR "
-          "Name='periscribe-proxy.exe' OR Name='periscribe-agent.exe'\" | "
-          f"Where-Object {{ $_.ExecutablePath -like '{app}*' }} | "
-          "ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }")
-    try:
-        subprocess.call(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-
-
-def _ensure_app_installed() -> Path:
-    """onedir 앱 폴더를 _app_dir 로 복사하고 그 안의 periscribe.exe 경로를 반환.
-    이미 설치 위치에서 실행 중이면 복사 없이 그대로 사용. 소스(개발) 실행은 sys.executable 반환."""
-    if not getattr(sys, "frozen", False):
-        return Path(sys.executable)
-    if _running_from_app():
-        return _app_exe()
-    import shutil
-    import time as _t
-    src = Path(sys.executable).parent           # 추출/다운로드된 onedir 폴더
-    dst = _app_dir()
-    _stop_app_processes()                        # 업데이트면 기존 앱 프로세스 정지(잠금 해제)
-    _t.sleep(0.8)
-    dst.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst, dirs_exist_ok=True)
-    return _app_exe()
-
-
 def _hide_console() -> None:
     """백그라운드(작업 스케줄러) 실행 시 콘솔 창을 숨긴다. console exe라 로그온 시 잠깐 떴다 사라짐."""
     if os.name != "nt":
@@ -242,9 +186,6 @@ def _collector_exe() -> Path | None:
     """컬렉터/guardian 을 띄울 collector exe 경로 해석(frozen 전용 의미).
     고정 설치 위치를 두지 않으므로 '자가치유로 항상 최신 위치를 담는 HKCU Run 값'을 진실의 원천으로
     삼는다. periscribe-proxy.exe 같은 별도 exe 가 collector 를 찾을 때 이 경로로 위임/spawn 한다."""
-    # 설치된 onedir 앱 exe 가 진실의 원천(고정 경로, 추출 없음). 있으면 항상 이걸 쓴다.
-    if _app_exe().is_file():
-        return _app_exe()
     if getattr(sys, "frozen", False) and Path(sys.executable).stem.lower() == "periscribe":
         return Path(sys.executable)  # collector 자기 자신
     cmd = _get_autostart(TASK_NAME)  # 설치/실행 시 자가등록된 Run 값: "{exe}" run -c "{config}"
@@ -317,9 +258,7 @@ def _reconcile_autostart() -> None:
         return  # collector exe 만 자기 위치를 등록(proxy.exe 등이 run 을 타도 오염 방지)
     try:
         cfg = _installed_config_path()
-        # 설치된 onedir 앱 exe 가 있으면 그 고정 경로를 등록(추출 zip 위치 등 비고정 경로 오염 방지).
-        exe = str(_app_exe()) if _app_exe().is_file() else sys.executable
-        want = f'"{exe}" run -c "{cfg}"'
+        want = f'"{sys.executable}" run -c "{cfg}"'
         if _get_autostart(TASK_NAME) != want:
             _set_autostart(TASK_NAME, want)
         # 가디언은 제거됐다 → 옛 버전이 남긴 guardian 자동시작 등록이 있으면 청소한다.
@@ -403,15 +342,12 @@ def cmd_install(argv: list[str]) -> int:
         "heartbeat_interval": 30, "log_file": str(data / "logs" / "collector.log"),
         "log_max_bytes": 5000000, "log_backups": 3,
     }
-    # 등록할 명령. frozen 이면 onedir 앱을 설치 폴더로 복사하고 그 고정 exe 를 쓴다.
+    # 등록할 명령(개별 onefile exe: 실행 중인 위치를 자동시작에 등록 → 자가치유로 위치 추종).
     if a.exe:
-        run_exe = a.exe
         run_cmd = f'"{a.exe}" run -c "{config_path}"'
     elif getattr(sys, "frozen", False):
-        run_exe = str(_ensure_app_installed())
-        run_cmd = f'"{run_exe}" run -c "{config_path}"'
+        run_cmd = f'"{sys.executable}" run -c "{config_path}"'
     else:
-        run_exe = ""
         pyw = str(Path(sys.executable).with_name("pythonw.exe"))
         run_cmd = f'"{pyw}" -m periscribe run -c "{config_path}"'
 
@@ -861,13 +797,7 @@ def cmd_uninstall(argv: list[str]) -> int:
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.call(["schtasks", "/Delete", "/TN", a.task_name, "/F"],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # 설치된 onedir 앱 폴더 제거(실행 중 프로세스 정지 후). 자기 자신이 app 에서 돌면 일부 파일이
-    # 잠겨 남을 수 있으나 best-effort — 다음 부팅 후 잔여 폴더는 수동 삭제 가능.
-    _stop_app_processes()
-    if _app_dir().exists() and not _running_from_app():
-        import shutil
-        shutil.rmtree(_app_dir(), ignore_errors=True)
-        print(f"[uninstall] 앱 폴더 제거: {_app_dir()}")
+    _stop_proxy_process()  # 실행 중인 API 프록시도 함께 종료(직결 복귀)
     print("[uninstall] 자동시작 해제됨. 실행 중인 수집기는 다음 로그인부터 시작되지 않습니다.")
     return 0
 
