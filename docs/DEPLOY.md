@@ -84,7 +84,9 @@ periscribe.exe proxy-setup        # 자체 CA 생성 + ~/.claude/settings.json e
 ```
 - 컬렉터가 프록시를 supervised subprocess 로 띄움(죽으면 재기동). Claude가 우리 CA를 신뢰(NODE_EXTRA_CA_CERTS)해
   TLS 복호화 → 요청/응답을 `source='api'`, kind=user_prompt/assistant_text/tool_use/tool_result 로 매핑 →
-  기존 파이프라인(E2EE) 수집 → 웹 **🛰 API**. 세션은 요청 metadata.user_id 의 session_id 로 묶임(한 대화=한 세션).
+  기존 파이프라인(E2EE) 수집 → 웹 **🛰 API**. 세션은 요청 metadata.user_id 의 session_id 로 묶임(한 대화=한 세션);
+  이 id 는 transcript 의 session_id 와 같아 **같은 대화가 transcript·API 한 세션으로 합쳐짐** → 웹 상단 **출처 탭
+  (전체 / 📝 Transcript / 🛰 API / 🐚 OS)** 으로 한 세션 안에서 나눠 본다.
 - **요청측 통제**: `%LOCALAPPDATA%\Periscribe\proxy-policy.json` 편집(핫리로드):
   `block_patterns`(매치 시 차단·에러 반환), `redact_patterns`(전송 전 마스킹), `inject_system`(시스템프롬프트 가드레일).
 - 끄기: `periscribe.exe proxy-teardown` → settings.json env 제거(Claude 재시작 시 Anthropic 직결).
