@@ -327,7 +327,9 @@
     const ctrBadge = ev.container_id
       ? `<span class="container-badge" title="container: ${esc(ev.container_id)}">🐳 ${esc(ev.container_id)}</span>` : "";
     const srcBadge = ev.source === "os-exec"
-      ? `<span class="src-badge" title="Claude 프로세스 트리(OS 레벨) — transcript가 못 보는 하위 프로세스까지">🐚 Claude OS</span>` : "";
+      ? `<span class="src-badge" title="Claude 프로세스 트리(OS 레벨) — transcript가 못 보는 하위 프로세스까지">🐚 Claude OS</span>`
+      : ev.source === "api"
+      ? `<span class="src-badge" title="Anthropic API 트래픽(외부 관찰자) — transcript 비의존, 로컬 게이트웨이 프록시">🛰 API</span>` : "";
     const sidechain = ev.is_sidechain ? `<span class="sidechain">↳ sub</span>` : "";
     const sess = ev.session_id ? esc(ev.session_id).slice(0, 8) : "";
 

@@ -39,6 +39,11 @@ class Config:
     os_exec_root_patterns: list = field(default_factory=lambda: ["claude.exe", "claude-code"])
     os_exec_deny_images: list = field(default_factory=list)
 
+    # Claude API 게이트웨이(로컬 리버스 프록시): Claude↔Anthropic 트래픽을 도청해 인풋/아웃풋/작업을
+    # transcript 없이 로깅 + 요청측 통제. ANTHROPIC_BASE_URL 로 Claude 를 이 프록시로 보낸다(무관리자).
+    api_log_enabled: bool = False
+    api_proxy_port: int = 8077
+
     # 식별
     machine_id: str = field(default_factory=socket.gethostname)
     source: str = "claude-code"

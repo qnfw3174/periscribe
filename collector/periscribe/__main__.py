@@ -389,6 +389,119 @@ def cmd_audit_setup(argv: list[str]) -> int:
     return 0
 
 
+# ---------------- Claude API 게이트웨이(로컬 프록시: 로깅 + 요청측 통제) ----------------
+def _settings_json_path() -> Path:
+    return Path.home() / ".claude" / "settings.json"
+
+
+def _proxy_policy_path() -> Path:
+    return _data_dir() / "proxy-policy.json"
+
+
+def _proxy_spool_path(cfg) -> Path:
+    import re
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", cfg.machine_id or "host") or "host"
+    return Path(cfg.watch_dir) / "_apilog" / f"{safe}.jsonl"
+
+
+def _set_config_keys(p: Path, keys: dict) -> None:
+    try:
+        data = json.loads(p.read_text(encoding="utf-8-sig")) if p.is_file() else {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    data.update(keys)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _merge_claude_env(env_updates: dict) -> None:
+    p = _settings_json_path()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8-sig")) if p.is_file() else {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    env = data.get("env")
+    if not isinstance(env, dict):
+        env = {}
+    env.update(env_updates)
+    data["env"] = env
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def cmd_proxy_run(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(prog="periscribe proxy-run")
+    p.add_argument("-c", "--config", default="config.json")
+    a = p.parse_args(argv)
+    if getattr(sys, "frozen", False):
+        _hide_console()
+    from . import apiproxy, proxycert
+    cfg = Config.load(a.config)
+    certs = proxycert.ensure_certs(_data_dir())
+    spool = _proxy_spool_path(cfg)
+    policy = _proxy_policy_path()
+    apiproxy.run_proxy(cfg.machine_id, cfg.api_proxy_port, str(spool), str(policy),
+                       certs["server_pem"], certs["server_key"],
+                       logger=lambda m: print(m, file=sys.stderr, flush=True))
+    return 0
+
+
+def cmd_proxy_setup(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(
+        prog="periscribe proxy-setup",
+        description="Claude API 게이트웨이 켜기(인/아웃/작업 로깅 + 요청측 통제). Claude를 로컬 프록시로 경유(무관리자).")
+    p.add_argument("--config", default=str(_installed_config_path()))
+    p.add_argument("--port", type=int, default=0)
+    p.add_argument("--dry-run", action="store_true")
+    a = p.parse_args(argv)
+    from . import proxycert
+    cfg = Config.load(a.config)
+    port = a.port or cfg.api_proxy_port
+    certs = proxycert.ensure_certs(_data_dir())
+    base_url = f"https://127.0.0.1:{port}"
+    print(f"[proxy-setup] CA: {certs['ca_pem']}")
+    print(f"[proxy-setup] ANTHROPIC_BASE_URL = {base_url}")
+    print(f"[proxy-setup] settings: {_settings_json_path()}")
+    if a.dry_run:
+        print("[proxy-setup] --dry-run: 변경 없음")
+        return 0
+    _merge_claude_env({"ANTHROPIC_BASE_URL": base_url, "NODE_EXTRA_CA_CERTS": certs["ca_pem"]})
+    _set_config_keys(Path(a.config), {"api_log_enabled": True, "api_proxy_port": port})
+    from . import proxypolicy
+    proxypolicy.ensure_policy_file(str(_proxy_policy_path()))
+    print("[proxy-setup] 완료 ✅  Claude를 재시작하면 로컬 프록시 경유 → 인풋/아웃풋/작업이 로깅됩니다(웹 🛰 API).")
+    print(f"[proxy-setup] 통제(차단/레닥션/주입): {_proxy_policy_path()} 편집.")
+    print("[proxy-setup] 끄기: periscribe.exe proxy-teardown (Claude 재시작 시 직결 복구)")
+    return 0
+
+
+def cmd_proxy_teardown(argv: list[str]) -> int:
+    p = argparse.ArgumentParser(prog="periscribe proxy-teardown")
+    p.add_argument("--config", default=str(_installed_config_path()))
+    a = p.parse_args(argv)
+    sp = _settings_json_path()
+    try:
+        data = json.loads(sp.read_text(encoding="utf-8-sig")) if sp.is_file() else {}
+    except Exception:
+        data = {}
+    env = data.get("env") if isinstance(data, dict) else None
+    if isinstance(env, dict):
+        env.pop("ANTHROPIC_BASE_URL", None)
+        env.pop("NODE_EXTRA_CA_CERTS", None)
+        if env:
+            data["env"] = env
+        else:
+            data.pop("env", None)
+        sp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _set_config_keys(Path(a.config), {"api_log_enabled": False})
+    print("[proxy-teardown] 완료. Claude 재시작 시 Anthropic 에 직접 연결됩니다.")
+    return 0
+
+
 # ---------------- setup (대화형) ----------------
 def cmd_setup(argv: list[str]) -> int:
     """더블클릭/인자 없음 진입점. 토큰만 입력받아 자동 설치한다(URL은 내장 기본값)."""
@@ -627,6 +740,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(argv[1:])
     if argv and argv[0] == "audit-setup":
         return cmd_audit_setup(argv[1:])
+    if argv and argv[0] == "proxy-run":
+        return cmd_proxy_run(argv[1:])
+    if argv and argv[0] == "proxy-setup":
+        return cmd_proxy_setup(argv[1:])
+    if argv and argv[0] == "proxy-teardown":
+        return cmd_proxy_teardown(argv[1:])
 
     if not argv:
         # 단일 exe 더블클릭: GUI 설치 창(설치돼 있으면 재설치 안내도 GUI에서).

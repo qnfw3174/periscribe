@@ -74,6 +74,23 @@ periscribe.exe audit-setup        # UAC 승격 → Sysmon 설치 + 전체 create
   로컬 Sysmon 로그엔 전체 프로세스가 남음(계보 추적용, 링버퍼). 컨테이너 내부는 미지원(Docker Desktop 제약;
   리눅스 호스트 eBPF는 후속).
 
+## 5c. Claude API 게이트웨이 (로깅 + 요청측 통제, transcript 비의존)
+Claude의 **인풋/아웃풋/작업을 transcript(Claude 자기기록) 없이** 외부 관찰자로 잡고, 요청 단계에서 통제한다.
+로컬 리버스 프록시가 Claude↔Anthropic 사이에 앉아 트래픽을 도청·중계한다(우리가 API를 호출하는 게 아니라
+Claude 트래픽을 관찰). **무관리자**. 대상 PC마다:
+```
+periscribe.exe proxy-setup        # 자체 CA 생성 + ~/.claude/settings.json env(ANTHROPIC_BASE_URL+NODE_EXTRA_CA_CERTS) 머지 + api_log_enabled=true
+# → Claude 재시작
+```
+- 컬렉터가 프록시를 supervised subprocess 로 띄움(죽으면 재기동). Claude가 우리 CA를 신뢰(NODE_EXTRA_CA_CERTS)해
+  TLS 복호화 → 요청/응답을 `source='api'`, kind=user_prompt/assistant_text/tool_use/tool_result 로 매핑 →
+  기존 파이프라인(E2EE) 수집 → 웹 **🛰 API**. 세션은 요청 metadata.user_id 의 session_id 로 묶임(한 대화=한 세션).
+- **요청측 통제**: `%LOCALAPPDATA%\Periscribe\proxy-policy.json` 편집(핫리로드):
+  `block_patterns`(매치 시 차단·에러 반환), `redact_patterns`(전송 전 마스킹), `inject_system`(시스템프롬프트 가드레일).
+- 끄기: `periscribe.exe proxy-teardown` → settings.json env 제거(Claude 재시작 시 Anthropic 직결).
+- **주의:** Claude API 가용성이 프록시에 의존(죽으면 직결 안 됨 → supervise+fail-open로 완화). 로컬에서 API 평문을
+  봄(서버 적재는 E2EE, transcript와 동일 경계). 응답 스트림은 무수정(요청측 통제만; tool_use 응답 게이팅은 후속).
+
 ## 6. 보안 체크리스트
 - [ ] ingest 함수만 service_role 사용(시크릿). PC/웹/깃엔 service_role 없음.
 - [ ] 공개 가입 비활성화, 관리자 계정만 존재.

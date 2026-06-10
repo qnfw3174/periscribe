@@ -13,11 +13,12 @@ import os
 import re
 import secrets
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from . import __version__, crypto
 from .checkpoint import Checkpoint
@@ -94,6 +95,11 @@ class Collector:
                 self._log(f"[periscribe] OS exec 감사 활성(session={self._audit.session_id})")
             except Exception as e:  # noqa: BLE001
                 self._log(f"[periscribe] OS exec 감사 초기화 실패: {e}")
+
+        # Claude API 게이트웨이 프록시(옵션, Windows). api_log_enabled면 별도 supervised subprocess.
+        self._proxy_proc: Optional[subprocess.Popen] = None
+        self._proxy_last_spawn = 0.0
+        self._proxy_enabled = bool(getattr(config, "api_log_enabled", False)) and os.name == "nt"
 
     # ---- E2EE: 하트비트 응답의 공개키 처리 + DEK 부트스트랩 ----
     def _handle_enc(self, resp: dict[str, Any] | None) -> None:
@@ -216,6 +222,39 @@ class Collector:
             n = self._delete_session(sid)
             self._log(f"[periscribe] 세션 삭제 명령 수신: session={sid} → 로컬 파일 {n}개 삭제")
 
+    # ---- API 게이트웨이 프록시 supervise(별도 프로세스로 항상 떠 있게) ----
+    @staticmethod
+    def _port_alive(port: int) -> bool:
+        import socket
+        try:
+            with socket.create_connection(("127.0.0.1", int(port)), timeout=0.5):
+                return True
+        except OSError:
+            return False
+
+    def _supervise_proxy(self) -> None:
+        if self._proxy_proc is not None and self._proxy_proc.poll() is None:
+            return  # 우리가 띄운 프록시 살아있음
+        now = time.time()
+        if now - self._proxy_last_spawn < 5.0:
+            return  # 재기동 백오프
+        # 우리가 추적 안 하지만(예: 컬렉터 재시작) 포트가 이미 살아있으면 중복 기동 안 함.
+        if self._proxy_proc is None and self._port_alive(self.config.api_proxy_port):
+            return
+        self._proxy_last_spawn = now
+        cfgpath = self.config.source_path or "config.json"
+        if getattr(sys, "frozen", False):
+            args = [sys.executable, "proxy-run", "-c", cfgpath]
+        else:
+            pyw = str(Path(sys.executable).with_name("pythonw.exe"))
+            args = [pyw, "-m", "periscribe", "proxy-run", "-c", cfgpath]
+        flags = 0x00000008 | 0x08000000 if os.name == "nt" else 0  # DETACHED | NO_WINDOW
+        try:
+            self._proxy_proc = subprocess.Popen(args, creationflags=flags, close_fds=True)
+            self._log("[periscribe] API 프록시 기동")
+        except Exception as e:  # noqa: BLE001
+            self._log(f"[periscribe] API 프록시 기동 실패: {e}")
+
     def _delete_session(self, session_id: str) -> int:
         # _reset_session 과 동일 매칭(메인 + 사이드체인 agent-* 파일). 파일 제거 + 체크포인트/타일러 정리.
         targeted = [f for f in self.discover()
@@ -275,8 +314,8 @@ class Collector:
             p = Path(f)
             if p.stem.startswith("agent-"):
                 continue
-            if p.parent.name == "_osexec":
-                continue  # OS exec 감사 spool 은 카탈로그에 안 띄움(이벤트는 정상 적재, 세션 자체 기술적)
+            if p.parent.name in ("_osexec", "_apilog"):
+                continue  # OS exec / API 게이트웨이 spool 은 카탈로그에 안 띄움(이벤트는 정상 적재)
             try:
                 st = p.stat()
             except OSError:
@@ -369,6 +408,10 @@ class Collector:
                             self._audit.poll()
                         except Exception as e:  # noqa: BLE001
                             self._log(f"[periscribe] OS exec 감사 폴 오류: {e}")
+
+                # API 프록시 supervise(죽었으면 재기동). spool(_apilog)은 아래 discover가 수집.
+                if self._proxy_enabled:
+                    self._supervise_proxy()
 
                 files = self.discover()
                 total = 0
