@@ -194,6 +194,16 @@ def test_env_has_proxy_value_semantics(tmp_path, monkeypatch):
     assert proxyguard.env_has_proxy() is True                        # 우리 프록시
 
 
+def test_route_to_proxy_does_not_save_direct_url_as_orig(tmp_path, monkeypatch):
+    """OFF 가 남긴 직결 기본값을 ON 이 '사용자 게이트웨이'로 오인해 보관하면 안 된다."""
+    _isolate(monkeypatch, tmp_path)
+    from periscribe import proxyguard
+    proxyguard.merge_settings_env({"ANTHROPIC_BASE_URL": proxyguard.DIRECT_BASE_URL})
+    saved = proxyguard.route_to_proxy("https://127.0.0.1:8097", "C:/x/ca.pem")
+    assert saved is None
+    assert not (proxyguard.data_dir() / "proxy-orig-env.json").is_file()
+
+
 def test_strip_noop_when_key_absent_or_foreign(tmp_path, monkeypatch):
     """키가 없으면 strip 이 키를 추가하지 않고, 우리 것이 아닌 값(사용자 게이트웨이)은 건드리지 않는다."""
     _isolate(monkeypatch, tmp_path)

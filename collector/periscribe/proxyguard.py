@@ -216,7 +216,9 @@ def route_to_proxy(base_url: str, ca_pem: str) -> Optional[str]:
         if not isinstance(env, dict):
             env = {}
         cur = env.get("ANTHROPIC_BASE_URL")
-        if isinstance(cur, str) and cur and not is_our_proxy_url(cur):
+        # 직결 기본값(우리가 OFF 때 덮어쓴 값)은 사용자 게이트웨이가 아니므로 보관 대상에서 제외 —
+        # 안 그러면 OFF→ON 반복 시 직결 URL 을 '기존 게이트웨이'로 오인해 보관/복원 안내가 잘못 뜬다.
+        if isinstance(cur, str) and cur and not is_our_proxy_url(cur) and cur != DIRECT_BASE_URL:
             _save_orig_base_url(cur)
             saved = cur
         env.update({"ANTHROPIC_BASE_URL": base_url, "NODE_EXTRA_CA_CERTS": ca_pem})
