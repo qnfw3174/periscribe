@@ -29,13 +29,14 @@ from .tailer import Tailer, file_inode, initial_offset
 
 
 def _child_env() -> dict:
-    """frozen exe 를 subprocess 로 띄울 때 PyInstaller 가 심은 _MEI 포인터 변수를 제거한 환경.
-    안 지우면 자식 onefile 부트로더가 부모의 _MEI 추출폴더를 재사용하려다 'no such file' 로 죽는다
-    (다른 onefile exe 를 spawn 할 때 = proxy.exe → periscribe.exe 경우 치명)."""
+    """frozen exe 를 subprocess 로 띄울 때 PyInstaller 가 심은 onefile 포인터 변수를 모두 제거한 환경.
+    안 지우면 자식 onefile 부트로더가 부모의 _MEI 추출폴더를 재사용하려다, 부모가 먼저 종료하며 그 폴더를
+    지워 'No such file or directory: ...base_library.zip' 로 죽는다(다른 onefile exe spawn = proxy.exe →
+    periscribe.exe 경우 치명; 첫 실행만 실패하고 재시도는 되는 전형적 레이스).
+    변수명을 하드코딩하지 않고 _PYI* / _MEIPASS* 접두사를 통째로 걷어 PyInstaller 버전 변화에도 안전하게 한다."""
     env = os.environ.copy()
-    for v in ("_MEIPASS2", "_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL",
-              "_PYI_APPLICATION_HOME_DIR"):
-        env.pop(v, None)
+    for k in [k for k in env if k.startswith("_PYI") or k.startswith("_MEIPASS")]:
+        env.pop(k, None)
     return env
 
 
