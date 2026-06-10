@@ -564,7 +564,11 @@ def cmd_guardian_run(argv: list[str]) -> int:
     log("[guardian] 시작 — API 프록시 failsafe 감시")
     down_since: float | None = None
     up_since: float | None = None
-    last_collector_spawn = 0.0
+    # 콜드스타트 레이스 방지: guardian 은 proxy-setup/부팅 자동시작과 거의 동시에 뜬다. 그때 컬렉터가
+    # 아직 collector.alive 를 못 쓴 상태라 _collector_stale 이 True → 즉시 중복 컬렉터를 띄우고, 그
+    # 둘이 각자 프록시를 띄워 2x 가 된다(체크포인트 경합 WinError 5 유발). 첫 재기동을 grace 만큼 늦춰
+    # 방금 뜬 컬렉터가 alive 를 쓸 시간을 준다.
+    last_collector_spawn = time.time()
 
     while True:
         cfg = Config.load(a.config)
