@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .collector import Collector
+from .collector import Collector, _child_env
 from .config import Config
 from .sink import IngestSink, StdoutSink
 
@@ -183,12 +183,12 @@ def _get_autostart(name: str) -> str | None:
 
 
 def _collector_exe() -> Path | None:
-    """컬렉터/guardian 을 띄울 '설치된' periscribe.exe 경로 해석(frozen 전용 의미).
-    periscribe-proxy.exe 같은 별도 배포 exe 안에서 _start_collector/_guardian_command 가
-    sys.executable(다운로드 폴더의 자기 자신)을 autostart 에 박는 일을 막는다."""
+    """컬렉터/guardian 을 띄울 collector exe 경로 해석(frozen 전용 의미).
+    고정 설치 위치를 두지 않으므로 '자가치유로 항상 최신 위치를 담는 HKCU Run 값'을 진실의 원천으로
+    삼는다. periscribe-proxy.exe 같은 별도 exe 가 collector 를 찾을 때 이 경로로 위임/spawn 한다."""
     if getattr(sys, "frozen", False) and Path(sys.executable).stem.lower() == "periscribe":
-        return Path(sys.executable)
-    cmd = _get_autostart(TASK_NAME)  # 설치 시 등록된 Run 값: "{exe}" run -c "{config}"
+        return Path(sys.executable)  # collector 자기 자신
+    cmd = _get_autostart(TASK_NAME)  # 설치/실행 시 자가등록된 Run 값: "{exe}" run -c "{config}"
     if cmd:
         s = cmd.strip()
         exe = s[1:s.index('"', 1)] if s.startswith('"') and s.count('"') >= 2 else s.split(" ", 1)[0]
@@ -196,9 +196,6 @@ def _collector_exe() -> Path | None:
         # dev 설치(pythonw -m periscribe ...) 값은 거부
         if p.is_file() and p.suffix.lower() == ".exe" and "periscribe" in p.stem.lower():
             return p
-    cand = _data_dir() / "periscribe.exe"
-    if cand.is_file():
-        return cand
     return None
 
 
@@ -213,7 +210,7 @@ def _start_collector(config_path: Path) -> None:
     if os.name == "nt":
         flags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
     try:
-        subprocess.Popen(args, creationflags=flags, close_fds=True)
+        subprocess.Popen(args, env=_child_env(), creationflags=flags, close_fds=True)
     except Exception:
         pass
 
@@ -224,6 +221,27 @@ def _guardian_command(config_path: Path) -> str:
         return f'"{_collector_exe() or sys.executable}" guardian-run -c "{config_path}"'
     pyw = str(Path(sys.executable).with_name("pythonw.exe"))
     return f'"{pyw}" -m periscribe guardian-run -c "{config_path}"'
+
+
+def _reconcile_autostart() -> None:
+    """자가치유 자동시작: 현재 실행 중인 exe 의 위치로 HKCU Run 값을 맞춘다.
+    exe 를 어디 두든/옮기든, 그 위치에서 한 번 실행되면(또는 컬렉터가 주기적으로) Run 값이 자동 동기화돼
+    '고정 설치 위치' 없이도 자동시작이 깨지지 않는다. 같은 값 이름을 덮어쓰므로 옛 경로는 자동 소멸.
+    frozen+Windows 전용(개발 모드/타 OS는 무의미)."""
+    if not (getattr(sys, "frozen", False) and os.name == "nt"):
+        return
+    if Path(sys.executable).stem.lower() != "periscribe":
+        return  # collector exe 만 자기 위치를 등록(proxy.exe 등이 run 을 타도 오염 방지)
+    try:
+        cfg = _installed_config_path()
+        want = f'"{sys.executable}" run -c "{cfg}"'
+        if _get_autostart(TASK_NAME) != want:
+            _set_autostart(TASK_NAME, want)
+        # 프록시 사용 중(Guardian 등록 존재)이면 guardian Run 값도 현재 exe 기준으로 정정.
+        if _get_autostart(GUARDIAN_TASK_NAME):
+            _set_autostart(GUARDIAN_TASK_NAME, _guardian_command(cfg))
+    except Exception:
+        pass  # 자가치유는 보조 기능 — 실패해도 본 동작에 영향 없음
 
 
 def _start_guardian(config_path: Path) -> None:
@@ -237,7 +255,7 @@ def _start_guardian(config_path: Path) -> None:
     if os.name == "nt":
         flags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
     try:
-        subprocess.Popen(args, creationflags=flags, close_fds=True)
+        subprocess.Popen(args, env=_child_env(), creationflags=flags, close_fds=True)
     except Exception:
         pass
 
@@ -260,6 +278,10 @@ def cmd_run(argv: list[str]) -> int:
     # 단일 exe로 백그라운드 실행될 때(작업 스케줄러) 콘솔 창을 숨긴다. 진단은 log_file로.
     if getattr(sys, "frozen", False) and not a.dry_run:
         _hide_console()
+
+    # 자가치유: 현재 exe 위치로 자동시작 값을 동기화(부팅/수동 실행 시 1회). exe를 옮겨도 깨지지 않게.
+    if not a.dry_run:
+        _reconcile_autostart()
 
     cfg = Config.load(a.config)
     if a.watch_dir: cfg.watch_dir = a.watch_dir
@@ -669,11 +691,13 @@ def cmd_proxy(argv: list[str]) -> int:
 
 
 def _create_proxy_shortcut() -> None:
-    """바탕화면에 'Periscribe 프록시' 바로가기(periscribe.exe proxy-gui) 1회 생성(frozen·Windows 전용)."""
+    """바탕화면에 'Periscribe 프록시' 바로가기(collector exe proxy-gui) 1회 생성(frozen·Windows 전용).
+    타깃은 collector exe(_collector_exe) — proxy.exe 를 지워도 바로가기가 동작하도록."""
     if os.name != "nt" or not getattr(sys, "frozen", False):
         return
     try:
-        exe = sys.executable
+        col = _collector_exe()
+        exe = str(col) if col else sys.executable
         desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
         lnk = desktop / "Periscribe 프록시.lnk"
         if lnk.exists():
@@ -992,6 +1016,18 @@ def _gui_setup_tk() -> int:
 def gui_proxy() -> int:
     """프록시 ON/OFF 토글 창(customtkinter). 현재 상태 표시 + 한 버튼 토글.
     customtkinter 미번들이면 콘솔 CLI(periscribe proxy)로 폴백."""
+    # 런처화: periscribe-proxy.exe(별도 배포 exe)는 자기 위치를 시스템에 박지 않고, 실제 처리를
+    # 설치된 collector exe 에 위임한다(버전 정합 + cross-exe spawn 1회로 _MEI 안전, 이후는 same-exe).
+    if getattr(sys, "frozen", False) and Path(sys.executable).stem.lower() != "periscribe":
+        col = _collector_exe()
+        if col:
+            _create_proxy_shortcut()
+            try:
+                subprocess.Popen([str(col), "proxy-gui"], env=_child_env(), close_fds=True)
+            except Exception:
+                pass
+            return 0
+        # collector 미설치 → 아래 미설치 안내 창으로 진행(위임 불가)
     _create_proxy_shortcut()
     try:
         import customtkinter as ctk
@@ -1006,7 +1042,14 @@ def gui_proxy() -> int:
     ACCENT, ACCENT_H, INK = "#6ea8fe", "#5a93e6", "#0b0d11"
     MUTED, OKC, WARN, ERRC = "#8a93a6", "#4cd585", "#ffcc66", "#ff6b6b"
 
-    if not _is_installed():
+    # collector exe 면 config+token 으로, proxy.exe(런처)면 collector exe 해석 실패로 미설치 판정.
+    # (proxy.exe 가 여기 왔다는 건 위임 실패 = _collector_exe() None = 설치 안 됐거나 Run 깨짐)
+    _not_installed = not _is_installed() or (
+        getattr(sys, "frozen", False)
+        and Path(sys.executable).stem.lower() != "periscribe"
+        and _collector_exe() is None
+    )
+    if _not_installed:
         # 컬렉터 미설치: 토글 UI 대신 안내 창(설정 로드가 불가능해 켜기 자체가 성립 안 함)
         app = ctk.CTk()
         app.title("Periscribe 프록시")

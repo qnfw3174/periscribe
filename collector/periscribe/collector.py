@@ -28,6 +28,17 @@ from .sink import Sink, SinkAuthError, SinkError
 from .tailer import Tailer, file_inode, initial_offset
 
 
+def _child_env() -> dict:
+    """frozen exe 를 subprocess 로 띄울 때 PyInstaller 가 심은 _MEI 포인터 변수를 제거한 환경.
+    안 지우면 자식 onefile 부트로더가 부모의 _MEI 추출폴더를 재사용하려다 'no such file' 로 죽는다
+    (다른 onefile exe 를 spawn 할 때 = proxy.exe → periscribe.exe 경우 치명)."""
+    env = os.environ.copy()
+    for v in ("_MEIPASS2", "_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL",
+              "_PYI_APPLICATION_HOME_DIR"):
+        env.pop(v, None)
+    return env
+
+
 class Collector:
     def __init__(self, config: Config, sink: Sink) -> None:
         self.config = config
@@ -102,6 +113,7 @@ class Collector:
         self._proxy_enabled = bool(getattr(config, "api_log_enabled", False)) and os.name == "nt"
         self._proxy_status_check = 0.0  # 프록시 pause 상태 표면화 throttle
         self._last_alive = 0.0          # guardian 이 읽는 생존 신호(alive 파일) touch throttle
+        self._last_autostart_sync = 0.0  # 자가치유 자동시작 reconcile throttle(exe 이동 추종)
 
     # ---- E2EE: 하트비트 응답의 공개키 처리 + DEK 부트스트랩 ----
     def _handle_enc(self, resp: dict[str, Any] | None) -> None:
@@ -252,7 +264,7 @@ class Collector:
             args = [pyw, "-m", "periscribe", "proxy-run", "-c", cfgpath]
         flags = 0x00000008 | 0x08000000 if os.name == "nt" else 0  # DETACHED | NO_WINDOW
         try:
-            self._proxy_proc = subprocess.Popen(args, creationflags=flags, close_fds=True)
+            self._proxy_proc = subprocess.Popen(args, env=_child_env(), creationflags=flags, close_fds=True)
             self._log("[periscribe] API 프록시 기동")
         except Exception as e:  # noqa: BLE001
             self._log(f"[periscribe] API 프록시 기동 실패: {e}")
@@ -271,6 +283,19 @@ class Collector:
             p.write_text(str(int(now)), encoding="utf-8")
         except Exception:
             pass
+
+    def _reconcile_autostart(self) -> None:
+        """자가치유 자동시작: 실행 중 collector exe 가 옮겨졌을 때 HKCU Run 값을 현재 위치로 맞춘다(5분 throttle).
+        고정 설치 위치를 두지 않으므로 '실행 중인 위치'가 단일 진실의 원천 → exe 를 어디 두든 자동시작 유지."""
+        now = time.time()
+        if now - self._last_autostart_sync < 300.0:
+            return
+        self._last_autostart_sync = now
+        try:
+            from . import __main__ as m
+            m._reconcile_autostart()
+        except Exception:
+            pass  # 보조 기능 — 실패해도 본 수집에 영향 없음
 
     # 프록시 failsafe 가 env 를 빼서(직결 fail-open) API 로깅이 일시중지된 상태를 헬스바에 표면화.
     # guardian 이 env 를 빼면 settings.json 에 ANTHROPIC_BASE_URL 이 사라진다 → 그걸 감지해 last_error 로 알림.
@@ -412,6 +437,7 @@ class Collector:
 
         while self._running:
             self._touch_alive()  # guardian 이 "컬렉터 살아있음"을 신뢰성 있게 판정하도록 매 루프 신호
+            self._reconcile_autostart()  # 자가치유: exe 이동 시 자동시작 경로 추종(5분 throttle)
             # 직전 오류를 하트비트에 실어 보낸다(웹에서 머신별 표시).
             if hasattr(self.sink, "set_last_error"):
                 self.sink.set_last_error(self._last_error)
