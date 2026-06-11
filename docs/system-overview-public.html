@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Periscribe — 서비스 아키텍처</title>
+<style>
+  body{margin:0;background:#0b0d12;color:#eef2f8;font:15px/1.6 -apple-system,Segoe UI,Roboto,'Malgun Gothic',sans-serif;padding:36px 24px}
+  .wrap{max-width:1200px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 4px;letter-spacing:-.02em}
+  .sub{color:#8b95a8;margin:0 0 22px;font-size:14px}
+  svg{width:100%;height:auto;background:radial-gradient(1200px 600px at 50% -10%,#141927 0%,#0a0c11 60%);border:1px solid #232a3a;border-radius:18px}
+  .node{fill:url(#g-node);stroke:#39435a;stroke-width:1.3}
+  .node.core{stroke:#5b8def;stroke-width:1.6}
+  .node.secure{stroke:#3fae7a;stroke-width:1.6}
+  .node.admin{stroke:#9d7bdc;stroke-width:1.6}
+  .ntitle{fill:#f2f5fa;font-weight:700;font-size:15px}
+  .nsub{fill:#939db1;font-size:12px}
+  .zlabel{fill:#aeb8ca;font-size:14px;font-weight:700;letter-spacing:.02em}
+  .zbox{fill:#0d1018;stroke:#39435a;stroke-width:1.4;stroke-dasharray:8 6}
+  .zshadow{fill:#0c0f16;stroke:#1d2330;stroke-width:1.2}
+  .edge{stroke:#7d8aa3;stroke-width:2;fill:none;marker-end:url(#m-base)}
+  .edge.ai{stroke:#5b8def;stroke-width:2.4;marker-end:url(#m-ai)}
+  .edge.enc{stroke:#3fae7a;stroke-width:2.4;marker-end:url(#m-enc)}
+  .edge.adm{stroke:#9d7bdc;stroke-width:2.2;marker-end:url(#m-adm)}
+  .edge.ctl{stroke:#9d7bdc;stroke-width:1.8;stroke-dasharray:7 5;marker-end:url(#m-adm)}
+  .el{fill:#cfd8e6;font-size:12px;font-weight:600}
+  .el.dim{fill:#8b95a8;font-weight:400;font-size:11.5px}
+  .badges{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:18px}
+  .badge{background:#10141d;border:1px solid #232a3a;border-radius:14px;padding:16px 18px}
+  .badge b{display:block;font-size:14.5px;margin-bottom:4px}
+  .badge span{color:#8b95a8;font-size:13px}
+  .badge.b1 b{color:#62d99a}.badge.b2 b{color:#7ba6f5}.badge.b3 b{color:#b79aec}
+  @media (max-width:760px){.badges{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⌖ Periscribe</h1>
+  <p class="sub">조직의 AI 코딩 도구 사용을 한눈에 — 실시간 가시성과 정책 통제, 그리고 종단간 암호화.</p>
+
+  <svg viewBox="0 0 1200 640" role="img" aria-label="Periscribe 서비스 아키텍처 (개요)">
+    <defs>
+      <linearGradient id="g-node" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#1a2030"/><stop offset="1" stop-color="#141925"/>
+      </linearGradient>
+      <marker id="m-base" markerWidth="10" markerHeight="10" refX="7.5" refY="3.5" orient="auto"><path d="M0,0 L7.5,3.5 L0,7 Z" fill="#7d8aa3"/></marker>
+      <marker id="m-ai" markerWidth="10" markerHeight="10" refX="7.5" refY="3.5" orient="auto"><path d="M0,0 L7.5,3.5 L0,7 Z" fill="#5b8def"/></marker>
+      <marker id="m-enc" markerWidth="10" markerHeight="10" refX="7.5" refY="3.5" orient="auto"><path d="M0,0 L7.5,3.5 L0,7 Z" fill="#3fae7a"/></marker>
+      <marker id="m-adm" markerWidth="10" markerHeight="10" refX="7.5" refY="3.5" orient="auto"><path d="M0,0 L7.5,3.5 L0,7 Z" fill="#9d7bdc"/></marker>
+    </defs>
+
+    <!-- ===== 구성원 PC (×N) ===== -->
+    <rect class="zshadow" x="52" y="68" width="380" height="486" rx="18"/>
+    <rect class="zshadow" x="46" y="75" width="380" height="486" rx="18"/>
+    <rect class="zbox" x="40" y="82" width="380" height="486" rx="18"/>
+    <text class="zlabel" x="64" y="112">🖥  구성원 PC</text>
+
+    <rect class="node" x="76" y="138" width="308" height="74" rx="12"/>
+    <text class="ntitle" x="96" y="168">💻 AI 코딩 어시스턴트</text>
+    <text class="nsub" x="96" y="190">개발자가 평소처럼 사용 — 추가 조작 없음</text>
+
+    <rect class="node core" x="76" y="268" width="308" height="92" rx="12"/>
+    <text class="ntitle" x="96" y="298">🛡 정책 게이트웨이</text>
+    <text class="nsub" x="96" y="320">모든 AI 요청을 실시간 검사</text>
+    <text class="nsub" x="96" y="338">차단 · 민감정보 마스킹 · 조직 가이드 적용</text>
+
+    <rect class="node core" x="76" y="436" width="308" height="92" rx="12"/>
+    <text class="ntitle" x="96" y="466">⚙️ 수집 에이전트</text>
+    <text class="nsub" x="96" y="488">AI 사용 기록을 수집해 기기 안에서 암호화</text>
+    <text class="nsub" x="96" y="506">평문은 PC 밖으로 나가지 않음</text>
+
+    <!-- ===== AI 서비스 ===== -->
+    <rect class="node" x="560" y="120" width="250" height="76" rx="13"/>
+    <text class="ntitle" x="582" y="152">☁️ AI 모델 서비스</text>
+    <text class="nsub" x="582" y="174">검사를 통과한 요청만 전달</text>
+
+    <!-- ===== 보안 클라우드 ===== -->
+    <rect class="zbox" x="520" y="312" width="330" height="256" rx="18"/>
+    <text class="zlabel" x="544" y="344">🔐  보안 클라우드</text>
+
+    <rect class="node secure" x="552" y="366" width="266" height="74" rx="12"/>
+    <text class="ntitle" x="572" y="396">🚪 수신 게이트웨이</text>
+    <text class="nsub" x="572" y="418">등록된 기기만 인증 후 수신</text>
+
+    <rect class="node secure" x="552" y="464" width="266" height="80" rx="12"/>
+    <text class="ntitle" x="572" y="494">🗄 암호화 저장소</text>
+    <text class="nsub" x="572" y="516">암호문만 보관 — 운영자도 내용 열람 불가</text>
+    <text class="nsub" x="572" y="532">(제로지식 구조)</text>
+
+    <!-- ===== 관리자 ===== -->
+    <rect class="node admin" x="930" y="368" width="232" height="120" rx="13"/>
+    <text class="ntitle" x="952" y="400">📊 관리 콘솔</text>
+    <text class="nsub" x="952" y="424">조직 전체 AI 활동 실시간 모니터링</text>
+    <text class="nsub" x="952" y="442">기록 열람은 관리자 화면에서만</text>
+    <text class="nsub" x="952" y="460">복호화되어 표시</text>
+
+    <!-- ===== 흐름 ===== -->
+    <!-- 어시스턴트 -> 게이트웨이 -->
+    <path class="edge ai" d="M230,212 V268"/>
+    <text class="el" x="244" y="244">모든 AI 요청</text>
+
+    <!-- 게이트웨이 <-> AI 서비스 -->
+    <path class="edge ai" d="M384,296 C470,280 490,200 560,168"/>
+    <text class="el" x="438" y="216">검사 후 중계</text>
+
+    <!-- 게이트웨이 -> 에이전트 (기록) -->
+    <path class="edge" d="M230,360 V436"/>
+    <text class="el dim" x="244" y="402">사용 기록</text>
+
+    <!-- 에이전트 -> 수신 게이트웨이 (E2EE) -->
+    <path class="edge enc" d="M384,478 C470,470 480,430 552,408"/>
+    <text class="el" x="408" y="432">종단간 암호화 전송</text>
+
+    <!-- 수신 게이트웨이 -> 저장소 -->
+    <path class="edge enc" d="M685,440 V464"/>
+
+    <!-- 저장소 -> 관리 콘솔 -->
+    <path class="edge adm" d="M818,486 C880,476 880,448 930,432"/>
+    <text class="el" x="846" y="444">실시간 동기화</text>
+
+    <!-- 관리 콘솔 -> PC (원격 통제) -->
+    <path class="edge ctl" d="M1040,488 C1030,610 480,624 416,560"/>
+    <text class="el" x="640" y="600">원격 통제 — 기기 차단 · 과거 기록 회수 · 원격 삭제</text>
+  </svg>
+
+  <div class="badges">
+    <div class="badge b1"><b>종단간 암호화 · 제로지식</b><span>기록은 PC 안에서 암호화되어 전송·보관됩니다. 서비스 운영자조차 내용을 볼 수 없고, 열람 권한은 조직 관리자에게만 있습니다.</span></div>
+    <div class="badge b2"><b>요청 단위 정책 통제</b><span>AI로 나가는 모든 요청이 정책 게이트웨이를 거칩니다. 차단, 민감정보 마스킹, 조직 가이드라인 적용까지 — 사후 감사가 아닌 실시간 통제입니다.</span></div>
+    <div class="badge b3"><b>실시간 가시성</b><span>조직 전체의 AI 활동이 관리 콘솔에 실시간으로 모입니다. 누가 어떤 작업에 AI를 쓰는지, 기기별 상태까지 한 화면에서 확인합니다.</span></div>
+  </div>
+</div>
+</body>
+</html>

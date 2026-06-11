@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Periscribe 시스템 구성도</title>
+<style>
+  body{margin:0;background:#0f1115;color:#e8ecf4;font:14px/1.5 -apple-system,Segoe UI,Roboto,'Malgun Gothic',sans-serif;padding:24px}
+  .wrap{max-width:1320px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 2px}
+  .sub{color:#8a93a6;margin:0 0 14px;font-size:13px}
+  svg{width:100%;height:auto;background:#0c0e13;border:1px solid #2b3140;border-radius:14px}
+  .node{fill:#171a21;stroke:#2b3140;stroke-width:1.2}
+  .node.ext{fill:#16203a;stroke:#33405c}
+  .node.cloud{fill:#1a1530;stroke:#3a2f5c}
+  .node.file{fill:#14181f;stroke:#26303f}
+  .node.hl{stroke:#33405c;stroke-width:1.6}
+  .ntitle{fill:#e8ecf4;font-weight:700;font-size:13px}
+  .nsub{fill:#8a93a6;font-size:10.5px}
+  .pcbox{fill:#0e1118;stroke:#3a4254;stroke-width:1.4;stroke-dasharray:7 5}
+  .pcshadow{fill:#0d1016;stroke:#222a37;stroke-width:1.2}
+  .pclabel{fill:#aeb7c7;font-size:13px;font-weight:600}
+  .edge{stroke:#8a93a6;stroke-width:1.6;fill:none;marker-end:url(#a-mut)}
+  .edge.api{stroke:#6ea8fe;stroke-width:2;marker-end:url(#a-api)}
+  .edge.read{stroke:#566074;stroke-width:1.5;stroke-dasharray:5 4;marker-end:url(#a-read)}
+  .edge.enc{stroke:#4cd585;stroke-width:2;marker-end:url(#a-enc)}
+  .edge.adm{stroke:#b794f6;stroke-width:1.8;marker-end:url(#a-adm)}
+  .el{fill:#cdd6e5;font-size:10.5px}
+  .el.dim{fill:#9aa3b4}
+  .mono{font-family:ui-monospace,Consolas,monospace;font-size:10px;fill:#9fb4dd}
+  .legend{display:flex;gap:20px;flex-wrap:wrap;color:#8a93a6;font-size:12px;margin-top:12px}
+  .legend b{color:#e8ecf4;font-weight:600}
+  .ln{display:inline-block;width:26px;height:0;border-top-width:3px;border-top-style:solid;vertical-align:middle;margin-right:7px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⌖ Periscribe — 시스템 구성도</h1>
+  <p class="sub">대상 PC(컬렉터+프록시) → Supabase(암호문 저장) → 관리자 브라우저(복호 열람). 화살표 = 데이터 흐름.</p>
+
+  <svg viewBox="0 0 1320 800" role="img" aria-label="Periscribe 시스템 토폴로지">
+    <defs>
+      <marker id="a-mut" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8a93a6"/></marker>
+      <marker id="a-api" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#6ea8fe"/></marker>
+      <marker id="a-read" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#566074"/></marker>
+      <marker id="a-enc" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#4cd585"/></marker>
+      <marker id="a-adm" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#b794f6"/></marker>
+    </defs>
+
+    <!-- ===== 대상 PC 컨테이너 (×N 스택) ===== -->
+    <rect class="pcshadow" x="52" y="76" width="640" height="668" rx="16"/>
+    <rect class="pcshadow" x="46" y="83" width="640" height="668" rx="16"/>
+    <rect class="pcbox" x="40" y="90" width="640" height="668" rx="16"/>
+    <text class="pclabel" x="62" y="116">🖥  대상 PC  (×N)</text>
+
+    <!-- ===== 노드: PC 내부 ===== -->
+    <!-- Claude Code -->
+    <rect class="node hl" x="80" y="134" width="190" height="58" rx="10"/>
+    <text class="ntitle" x="96" y="160">💻 Claude Code</text>
+    <text class="nsub" x="96" y="178">Node 프로세스 (CLI/IDE)</text>
+
+    <!-- API Proxy -->
+    <rect class="node hl" x="80" y="304" width="190" height="64" rx="10"/>
+    <text class="ntitle" x="96" y="330">🛰 API 프록시</text>
+    <text class="nsub" x="96" y="347">127.0.0.1:8077 · TLS(우리 CA)</text>
+    <text class="nsub" x="96" y="361">정책: 차단·레닥션·주입</text>
+
+    <!-- Sysmon -->
+    <rect class="node" x="80" y="474" width="190" height="52" rx="10"/>
+    <text class="ntitle" x="96" y="498">🐚 Sysmon (선택)</text>
+    <text class="nsub" x="96" y="515">OS exec 감사 · EID1</text>
+
+    <!-- config.json -->
+    <rect class="node file" x="80" y="600" width="190" height="54" rx="10"/>
+    <text class="ntitle" x="96" y="624">🔧 config.json</text>
+    <text class="nsub" x="96" y="641">token · dek(E2EE키) · port</text>
+
+    <!-- transcript files -->
+    <rect class="node file" x="378" y="134" width="200" height="52" rx="10"/>
+    <text class="ntitle" x="394" y="158">📝 transcript</text>
+    <text class="nsub" x="394" y="175">~/.claude/projects/**/*.jsonl</text>
+
+    <!-- spool apilog -->
+    <rect class="node file" x="378" y="306" width="200" height="50" rx="10"/>
+    <text class="ntitle" x="394" y="329">🗂️ spool · _apilog</text>
+    <text class="nsub" x="394" y="346">&lt;machine&gt;.jsonl (API 이벤트)</text>
+
+    <!-- spool osexec -->
+    <rect class="node file" x="378" y="476" width="200" height="48" rx="10"/>
+    <text class="ntitle" x="394" y="498">🗂️ spool · _osexec</text>
+    <text class="nsub" x="394" y="515">프로세스 실행 이벤트</text>
+
+    <!-- Collector -->
+    <rect class="node hl" x="378" y="566" width="224" height="86" rx="11"/>
+    <text class="ntitle" x="396" y="592">⚙️ 컬렉터 (run)</text>
+    <text class="nsub" x="396" y="610">transcript+spool 수집 → 업로드</text>
+    <text class="nsub" x="396" y="626">하트비트 · 백필/삭제 수신</text>
+    <text class="nsub" x="396" y="642">유일한 서버 업로드 주체</text>
+
+    <!-- ===== 노드: 외부 ===== -->
+    <!-- Anthropic API -->
+    <rect class="node cloud" x="752" y="132" width="210" height="76" rx="12"/>
+    <text class="ntitle" x="770" y="160">☁️ Anthropic API</text>
+    <text class="nsub" x="770" y="178">api.anthropic.com</text>
+    <text class="nsub" x="770" y="194">실제 모델 응답(SSE)</text>
+
+    <!-- Web Vercel -->
+    <rect class="node ext" x="1052" y="132" width="214" height="76" rx="12"/>
+    <text class="ntitle" x="1070" y="160">🖥 웹 대시보드</text>
+    <text class="nsub" x="1070" y="178">Vercel (정적 앱)</text>
+    <text class="nsub" x="1070" y="194">헬스바·세션 피드·출처 탭</text>
+
+    <!-- Supabase -->
+    <rect class="node cloud" x="892" y="430" width="220" height="96" rx="12"/>
+    <text class="ntitle" x="910" y="458">☁️ Supabase</text>
+    <text class="nsub" x="910" y="476">Postgres + RLS(owner)</text>
+    <text class="nsub" x="910" y="492">/functions/v1/ingest</text>
+    <text class="nsub" x="910" y="508">암호문만 저장(제로지식)</text>
+
+    <!-- Admin -->
+    <rect class="node ext" x="1052" y="588" width="214" height="96" rx="12"/>
+    <text class="ntitle" x="1070" y="616">🧑‍💼 관리자 브라우저</text>
+    <text class="nsub" x="1070" y="634">아무 PC(이 PC 포함)</text>
+    <text class="nsub" x="1070" y="650">E2EE 키로 로컬 복호</text>
+    <text class="nsub" x="1070" y="666">전체 머신 로그 열람</text>
+
+    <!-- ===== 연결선 ===== -->
+    <!-- Claude -> Proxy (라우팅) -->
+    <path class="edge api" d="M175,192 V304"/>
+    <text class="el" x="186" y="225">settings.json env →</text>
+    <text class="mono" x="186" y="240">ANTHROPIC_BASE_URL</text>
+    <text class="mono" x="186" y="253">= 127.0.0.1:8077</text>
+    <text class="el dim" x="186" y="267">+ NODE_EXTRA_CA_CERTS</text>
+
+    <!-- Proxy -> Anthropic (중계) -->
+    <path class="edge api" d="M270,326 C470,300 560,200 752,176"/>
+    <text class="el" x="500" y="250">중계 → api.anthropic.com</text>
+    <text class="el dim" x="500" y="265">SSE 패스스루 + 복사 로깅</text>
+
+    <!-- Claude -> transcript -->
+    <path class="edge" d="M270,156 H378"/>
+    <text class="el dim" x="292" y="148">기록</text>
+
+    <!-- Proxy -> spool apilog -->
+    <path class="edge" d="M270,332 H378"/>
+    <text class="el dim" x="288" y="324">정규화 이벤트</text>
+
+    <!-- Sysmon -> spool osexec -->
+    <path class="edge" d="M270,499 H378"/>
+    <text class="el dim" x="300" y="491">수집</text>
+
+    <!-- transcript -> Collector (read) -->
+    <path class="edge read" d="M452,186 V566"/>
+    <!-- spool apilog -> Collector (read) -->
+    <path class="edge read" d="M512,356 V566"/>
+    <!-- osexec -> Collector (read) -->
+    <path class="edge read" d="M470,524 V566"/>
+    <text class="el dim" x="520" y="430">tail / discover</text>
+    <text class="el dim" x="520" y="445">(읽기)</text>
+
+    <!-- config -> Collector (read) -->
+    <path class="edge read" d="M270,627 C320,627 340,612 378,608"/>
+    <text class="el dim" x="284" y="648">dek·token</text>
+
+    <!-- Collector -> Supabase (ingest, E2EE) -->
+    <path class="edge enc" d="M602,604 C720,600 800,540 892,506"/>
+    <text class="el" x="640" y="560">POST /ingest</text>
+    <text class="el dim" x="640" y="575">토큰 인증 · E2EE 암호문</text>
+
+    <!-- Web -> Admin (앱 제공) -->
+    <path class="edge adm" d="M1159,208 V588"/>
+    <text class="el dim" x="1168" y="400">정적 앱 제공</text>
+
+    <!-- Admin <-> Supabase (데이터/복호) -->
+    <path class="edge adm" d="M1052,632 C980,600 1010,560 1086,524" stroke-dasharray="6 4"/>
+    <text class="el" x="930" y="590">쿼리 · Realtime</text>
+    <text class="el dim" x="930" y="605">(암호문 → 브라우저 복호)</text>
+  </svg>
+
+  <div class="legend">
+    <span><span class="ln" style="border-color:#6ea8fe"></span><b>API 라우팅/중계</b> — Claude→프록시→Anthropic</span>
+    <span><span class="ln" style="border-color:#8a93a6"></span><b>로컬 기록</b> — transcript·spool 쓰기</span>
+    <span><span class="ln" style="border-color:#566074;border-top-style:dashed"></span><b>컬렉터 읽기</b></span>
+    <span><span class="ln" style="border-color:#4cd585"></span><b>업로드(E2EE)</b> — 컬렉터→Supabase</span>
+    <span><span class="ln" style="border-color:#b794f6"></span><b>관리자 열람</b> — 웹/Supabase↔브라우저</span>
+  </div>
+  <p class="sub" style="margin-top:10px">⚠ 프록시는 자체 업로드 불가 — 같은 PC의 컬렉터가 spool을 읽어 올려야 웹에 뜬다. 컬렉터·프록시 분리(독립 프로세스) + 가디언 없음(프록시 죽으면 수동 <code style="color:#9fb4dd">proxy off</code>).</p>
+</div>
+</body>
+</html>
