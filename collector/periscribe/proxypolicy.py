@@ -1,8 +1,12 @@
-"""proxypolicy — API 프록시 요청측 통제(차단/레닥션/시스템프롬프트 주입).
+"""proxypolicy — API 프록시 통제(요청 차단/레닥션/주입 + 응답측 도구호출 게이팅).
 
-호스트의 proxy-policy.json(편집 가능, 매 요청 핫리로드)을 읽어 Anthropic 으로 가는 요청을
-검사·수정한다. 잘못된 정책/누락은 통제 미적용(통과)으로 폴백 — 통제가 Claude 를 깨지 않게.
-응답 스트림은 절대 건드리지 않는다(요청측만). 표준 라이브러리만.
+호스트의 proxy-policy.json(편집 가능, 매 요청 핫리로드)을 읽어 Anthropic 으로 가는 요청과
+돌아오는 응답을 검사·수정한다. 잘못된 정책/누락은 통제 미적용(통과)으로 폴백 — 통제가 Claude 를
+깨지 않게(fail-open). 표준 라이브러리만.
+
+- 요청측 차단: 매 요청의 '신규(trailing) 프롬프트'만 검사(히스토리 재차단으로 세션이 막히지 않게).
+  차단 시 프록시가 합성 응답(block_message)으로 직접 대답 → Anthropic 미전송, 세션 무손상.
+- 응답측 게이팅: 응답의 위험 tool_use(예: 파일 삭제)를 탐지해 실행 전에 차단(apiproxy 가 수행).
 """
 
 from __future__ import annotations
@@ -14,9 +18,13 @@ from typing import Any, Optional
 
 DEFAULT_POLICY = {
     "enabled": True,
-    "block_patterns": [],      # 요청 내용 매치 시 차단(에러 반환, Anthropic 미전송)
-    "redact_patterns": [],     # 전송 전 messages 텍스트에서 추가 마스킹
-    "inject_system": "",       # system 프롬프트에 가드레일 텍스트 append
+    "block_patterns": [],          # 신규 프롬프트 매치 시 차단(프록시가 block_message 로 대답, Anthropic 미전송)
+    "block_message": "취소",        # 차단 시 프록시가 합성해 보낼 assistant 응답 텍스트
+    "redact_patterns": [],         # 전송 전 messages 텍스트에서 추가 마스킹
+    "inject_system": "",           # system 프롬프트에 가드레일 텍스트 append
+    "gate_tool_use": False,        # 응답측 도구호출 게이팅 ON/OFF(켜면 응답을 버퍼해 검사)
+    "tool_block_patterns": [],     # 위험 도구호출 패턴(매치 대상: "<name> <input json>")
+    "tool_block_message": "파일 삭제 - 차단",  # 도구 차단 시 프록시가 대답할 텍스트
 }
 
 
@@ -58,12 +66,20 @@ def _is_ctx(t: str) -> bool:
             or t.startswith("<command-name>") or t.startswith("<local-command"))
 
 
-def _user_text(body: dict[str, Any]) -> str:
-    """모든 user 메시지의 실제 입력(프롬프트 텍스트 + tool_result 내용) 결합. 끼워넣은 컨텍스트 블록 제외.
-    (Claude는 실제 프롬프트를 messages[0] 텍스트블록에 두고 messages[-1]에 system 컨텍스트를 붙이므로
-    마지막 메시지만 보면 안 됨.)"""
+def _trailing_user_text(body: dict[str, Any]) -> str:
+    """'마지막 assistant 이후'(trailing) user 입력만 결합 — 신규 프롬프트/tool_result. 컨텍스트 블록 제외.
+
+    전체 히스토리를 보면 안 된다: 한 번 차단된 프롬프트가 Claude 히스토리에 남아 매 요청 재전송되는데,
+    전체를 검사하면 매번 재차단되어 세션이 영구히 막힌다. 차단 시 프록시가 합성 assistant 응답을 끼워
+    넣으므로(apiproxy) 그 프롬프트는 assistant 경계 뒤로 밀려나 다음 요청의 trailing 에서 빠진다 →
+    "다음 프롬프트는 정상" 이 성립. (apilog.events_from_request 의 trailing 판정과 동일 의미.)"""
+    msgs = body.get("messages") or []
+    last_asst = -1
+    for i, m in enumerate(msgs):
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            last_asst = i
     parts = []
-    for msg in body.get("messages") or []:
+    for msg in msgs[last_asst + 1:]:
         if not isinstance(msg, dict) or msg.get("role") != "user":
             continue
         c = msg.get("content")
@@ -82,13 +98,29 @@ def _user_text(body: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def match_blocked_tools(blocks: Any, patterns: Any) -> list[str]:
+    """응답 blocks(assemble_sse/message_from_json 형태) 중 tool_block_patterns 에 매치되는 tool_use 의
+    이름 목록. 매치 대상은 "<name> <input json>". apiproxy 의 응답 게이팅이 호출(순수 함수)."""
+    rxs = _compile(patterns)
+    if not rxs:
+        return []
+    hits: list[str] = []
+    for b in blocks or []:
+        if not isinstance(b, dict) or b.get("type") != "tool_use":
+            continue
+        hay = f"{b.get('name', '')} {json.dumps(b.get('input') or {}, ensure_ascii=False, default=str)}"
+        if any(rx.search(hay) for rx in rxs):
+            hits.append(b.get("name") or "tool")
+    return hits
+
+
 def apply_policy(policy: dict[str, Any], body: dict[str, Any]) -> tuple[bool, dict[str, Any], str]:
     """(blocked, modified_body, reason). blocked면 modified_body 무의미(전송 안 함)."""
     if not isinstance(body, dict) or not policy.get("enabled", True):
         return False, body, ""
 
-    # 1) 차단: user 입력(프롬프트/tool_result) 내용이 패턴에 매치되면 차단.
-    hay = _user_text(body)
+    # 1) 차단: 신규(trailing) user 입력(프롬프트/tool_result)이 패턴에 매치되면 차단.
+    hay = _trailing_user_text(body)
     for rx in _compile(policy.get("block_patterns")):
         m = rx.search(hay)
         if m:

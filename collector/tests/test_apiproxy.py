@@ -2,7 +2,7 @@
 네트워크/실제 Claude 불필요(순수 함수). 프록시 HTTP 흐름은 수동 E2E로 검증."""
 import json
 
-from periscribe import apilog, proxypolicy, proxycert
+from periscribe import apilog, apiproxy, proxypolicy, proxycert
 
 SSE = "\n".join([
     'event: message_start',
@@ -164,6 +164,53 @@ def test_policy_block_redact_inject():
     # disabled → 통과
     blk, mod, _ = proxypolicy.apply_policy({"enabled": False, "block_patterns": [r"rm"]}, body)
     assert not blk
+
+
+def test_block_matches_trailing_only():
+    """Section 1: 차단은 신규(trailing) 프롬프트만 — 히스토리의 aaaa 는 재차단 안 함(세션 안 막힘)."""
+    pol = {"enabled": True, "block_patterns": ["aaaa"]}
+    # aaaa 가 마지막 assistant 이전(히스토리) → 미차단
+    body = {"messages": [
+        {"role": "user", "content": "aaaa"},
+        {"role": "assistant", "content": [{"type": "text", "text": "취소"}]},
+        {"role": "user", "content": "hello"},
+    ]}
+    assert proxypolicy.apply_policy(pol, body)[0] is False
+    # aaaa 가 trailing(마지막 assistant 이후) → 차단
+    body2 = {"messages": [
+        {"role": "user", "content": "aaaa"},
+        {"role": "assistant", "content": [{"type": "text", "text": "x"}]},
+        {"role": "user", "content": "please aaaa now"},
+    ]}
+    assert proxypolicy.apply_policy(pol, body2)[0] is True
+
+
+def test_build_message_response_stream_and_json():
+    """Section 1/2: 합성 응답이 Anthropic 형식과 호환(assemble_sse 로 되읽힘) + model 에코 + end_turn."""
+    ct, body = apiproxy.build_message_response("claude-x", [], "취소", True)
+    assert "event-stream" in ct
+    s = body.decode("utf-8")
+    assert "취소" in s and "message_stop" in s and "claude-x" in s
+    assert apilog.assemble_sse(s)["blocks"][0]["text"] == "취소"
+    # 비스트림 JSON + 선행 텍스트 보존 + 말미 notice
+    ct2, body2 = apiproxy.build_message_response("claude-x", ["선행"], "파일 삭제 - 차단", False)
+    assert "application/json" in ct2
+    d = json.loads(body2.decode("utf-8"))
+    assert d["stop_reason"] == "end_turn" and d["role"] == "assistant"
+    assert [b["text"] for b in d["content"]] == ["선행", "파일 삭제 - 차단"]
+    assert all(b["type"] != "tool_use" for b in d["content"])   # tool_use 없음 → 실행 불가
+
+
+def test_match_blocked_tools():
+    """Section 2: 위험 tool_use(rm) 탐지, 안전 도구(ls)는 통과, 패턴 없으면 전부 통과."""
+    blocks = [
+        {"type": "text", "text": "지울게요"},
+        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "rm -rf /tmp/x"}},
+    ]
+    assert proxypolicy.match_blocked_tools(blocks, [r"\brm\b"]) == ["Bash"]
+    safe = [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "ls -la"}}]
+    assert proxypolicy.match_blocked_tools(safe, [r"\brm\b"]) == []
+    assert proxypolicy.match_blocked_tools(blocks, []) == []
 
 
 def test_proxycert_generates_valid(tmp_path):
