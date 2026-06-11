@@ -37,21 +37,17 @@
 
 ## 3. 머신 추가 (관리자가 웹에서)
 1. 로그인 후 상단 **⚙ 머신 관리** → 머신 이름 입력 → **+ 토큰 발급**.
-2. 표시된 **디바이스 토큰**과 **설치 명령**을 복사(토큰은 이때 한 번만 표시됨).
-   ```
-   periscribe.exe install --token <발급된토큰> --url https://<project>.supabase.co/functions/v1/ingest
-   ```
-3. 그 PC에서 위 명령을 실행(아래 4번). 잠시 후 헬스바에 🟢로 나타남.
+2. 표시된 **디바이스 토큰**을 복사(이때 한 번만 표시됨).
+3. 그 PC에서 `periscribe.exe`를 더블클릭 → GUI 설치 창에 토큰 붙여넣기(아래 4번).
+   잠시 후 헬스바에 🟢로 나타남.
 4. 분실/이탈 시 머신 관리에서 **revoke** → 그 토큰은 즉시 무효.
 
 ## 4. 각 PC에 설치 (Windows)
-- **단일 exe(권장, 배포 시)**: 관리자에게 받은 `periscribe.exe`로 위 install 명령 실행 →
-  config 작성 + 부팅 자동실행 등록(무콘솔). Python 불필요. (빌드는 `packaging/` 참고.)
-- **소스 실행(개발/빌드 전)**: 저장소를 받고 `collector/`에서
-  ```
-  python -m periscribe --ingest-url <URL> --device-token <토큰>
-  ```
-  또는 `config.json`에 `ingest_url`/`device_token`을 넣고 `python -m periscribe`.
+- **단일 exe(권장, 배포 시)**: 관리자에게 받은 `periscribe.exe` **더블클릭** → 설치 창에 토큰
+  붙여넣기 → config 작성 + 부팅 자동실행 등록(무콘솔). Python 불필요. 터미널에선
+  `periscribe.exe setup`(대화형). (빌드는 `packaging/` 참고.)
+- **소스 실행(개발/빌드 전)**: 저장소를 받고 `collector/config.json`에 `ingest_url`/`device_token`을
+  넣은 뒤 `python -m periscribe`.
 
 ## 5. 운영
 - **헬스**: 각 머신이 주기적 ingest로 `last_seen` 갱신. 웹 헬스바에서 온라인/대기 표시.
@@ -79,12 +75,12 @@ Claude의 **인풋/아웃풋/작업을 transcript(Claude 자기기록) 없이** 
 로컬 리버스 프록시가 Claude↔Anthropic 사이에 앉아 트래픽을 도청·중계한다(우리가 API를 호출하는 게 아니라
 Claude 트래픽을 관찰). **무관리자**. 대상 PC마다:
 ```
-periscribe.exe proxy-setup        # 자체 CA 생성 + ~/.claude/settings.json env(ANTHROPIC_BASE_URL+NODE_EXTRA_CA_CERTS) 머지 + api_log_enabled=true
+periscribe.exe proxy on           # 자체 CA 생성 + ~/.claude/settings.json env(ANTHROPIC_BASE_URL+NODE_EXTRA_CA_CERTS) 머지 + api_log_enabled=true
 # → 최초 1회만 Claude 재시작(CA가 세션 시작 시에만 로드됨). 이후 켜기/끄기는 떠 있는 세션도 무중단(env 핫리로드).
 # 사용자가 원래 쓰던 ANTHROPIC_BASE_URL(예: 사내 게이트웨이)이 있으면 켤 때 보관했다가 끌 때 복원.
 ```
 또는 명령어 없이 **`periscribe-proxy.exe` 더블클릭**(별도 다운로드, 무관리자) → GUI에서 켜기/끄기.
-같은 토글은 `periscribe.exe proxy-gui` / `periscribe.exe proxy on|off|status` 로도 가능. Collector 설치가 선행돼야 한다.
+같은 토글은 `periscribe.exe proxy-gui` / `periscribe.exe proxy on|off|toggle|status` 로도 가능. Collector 설치가 선행돼야 한다.
 - **컬렉터와 프록시는 분리**(v0.2.2+): 프록시는 `proxy on` 이 직접 띄우는 **독립 프로세스**이고, 컬렉터는
   프록시가 spool(`_apilog/*.jsonl`)에 쓴 로그를 다른 transcript 와 똑같이 수집·업로드만 한다(느슨한 파일 파이프라인).
   컬렉터가 프록시를 띄우거나 감시하지 않으며 **가디언(failsafe)도 없다** — 프록시가 죽으면 자동 직결복구가 없으니
@@ -95,7 +91,7 @@ periscribe.exe proxy-setup        # 자체 CA 생성 + ~/.claude/settings.json e
   (전체 / 📝 Transcript / 🛰 API / 🐚 OS)** 으로 한 세션 안에서 나눠 본다.
 - **요청측 통제**: `%LOCALAPPDATA%\Periscribe\proxy-policy.json` 편집(핫리로드):
   `block_patterns`(매치 시 차단·에러 반환), `redact_patterns`(전송 전 마스킹), `inject_system`(시스템프롬프트 가드레일).
-- 끄기: `periscribe.exe proxy-teardown` (또는 GUI의 "프록시 끄기") → settings.json 의 ANTHROPIC_BASE_URL 을
+- 끄기: `periscribe.exe proxy off` (또는 GUI의 "프록시 끄기") → settings.json 의 ANTHROPIC_BASE_URL 을
   **직결 URL 로 덮어쓰기**(키 삭제가 아님 — Claude 는 settings env 를 프로세스 env 에 병합만 해서 삭제는 실행 중
   세션에 반영되지 않음; 값 변경이라야 떠 있는 세션도 즉시 직결). 상주 CA(NODE_EXTRA_CA_CERTS)는 유지 —
   다음 켜기가 무중단이 되기 위한 조건. 완전 제거(상주 CA 포함)는 `periscribe.exe uninstall`(이때도

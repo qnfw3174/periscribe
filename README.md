@@ -32,13 +32,14 @@ Claude Code가 자동으로 남기는 transcript(JSONL)를 **읽기 전용**으�
    + 관리자 로그인 계정 생성 + 공개 가입 OFF.
 2. **Web UI**: Vercel(Root=`web`, env `SUPABASE_URL`/`SUPABASE_ANON_KEY`) 배포 → 관리자 로그인.
 3. **머신 추가**: 웹 **⚙ 머신 관리** → 토큰 발급 → 표시된 설치 명령을 그 PC에서 실행.
-4. **각 PC(Collector)**: 디바이스 토큰으로 ingest 함수에 적재. 소스 실행 예:
+4. **각 PC(Collector)**: `periscribe.exe` 더블클릭 → GUI 설치 창에 토큰 붙여넣기(권장).
+   소스 실행은 `collector/config.json`에 `ingest_url`/`device_token`을 채우고:
    ```bash
    cd collector
-   python -m periscribe --ingest-url <URL>/functions/v1/ingest --device-token <발급토큰>
+   python -m periscribe
    ```
-   (또는 `config.json`의 `ingest_url`/`device_token`을 채우고 `python -m periscribe`.)
-   - 기본 EOF부터(과거 폭주 방지), `--backfill N`으로 백필. 오프셋 체크포인트로 손실 없이 재개.
+   - 기본 EOF부터(과거 폭주 방지). 과거 기록은 웹 **⚙ 머신 관리**의 **과거 백필** 버튼으로 끌어옴.
+     오프셋 체크포인트로 손실 없이 재개.
    - 멱등성: `event_id` PK + `on conflict do nothing`(함수 측).
 
 ## 보안 모델 (멀티테넌트 서비스)

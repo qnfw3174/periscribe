@@ -2,11 +2,11 @@
 
 실제 ~/.claude / 레지스트리 / 설치 exe 는 건드리지 않는다: HOME·LOCALAPPDATA 를 임시폴더로 격리하고,
 OS 부작용 헬퍼(_set_autostart/_del_autostart/_start_proxy_process/_stop_proxy_process)만 no-op 으로
-스텁한 뒤 **실제 cmd_proxy_setup / _proxy_enable / _proxy_disable 코드 경로**를 돌린다.
+스텁한 뒤 **실제 _proxy_enable(proxy on) / _proxy_disable(proxy off) 코드 경로**를 돌린다.
 
 검증 시나리오:
-  1. 프록시가 serve 못 하면 proxy-setup 이 env 를 안 쓰고 실패(exit 3)
-  2. 프록시가 serve 하면 proxy-setup 이 검증 후 env 기록(exit 0)
+  1. 프록시가 serve 못 하면 _proxy_enable 이 env 를 안 쓰고 실패(ok=False)
+  2. 프록시가 serve 하면 _proxy_enable 이 검증 후 env 기록(ok=True)
   3. OFF 는 env 를 직결로 덮어쓰기(키 삭제 아님), 상주 CA 유지 / 사용자 게이트웨이 보관·복원
 """
 
@@ -71,7 +71,7 @@ def stub_os_side_effects(monkeypatch):
 
 
 def test_setup_refuses_when_proxy_dead(tmp_path, monkeypatch, stub_os_side_effects):
-    """시나리오 1: 프록시가 없으면 proxy-setup 이 env 를 안 쓰고 exit 3."""
+    """시나리오 1: 프록시가 없으면 _proxy_enable(proxy on) 이 env 를 안 쓰고 실패(ok=False)."""
     _isolate(monkeypatch, tmp_path)
     from periscribe import proxyguard
     m = stub_os_side_effects
@@ -79,16 +79,16 @@ def test_setup_refuses_when_proxy_dead(tmp_path, monkeypatch, stub_os_side_effec
     cfg = tmp_path / "config.json"
     _write_config(cfg, api_proxy_port=8097)
 
-    rc = m.cmd_proxy_setup(["--config", str(cfg), "--port", "8097"])
+    ok, _lines = m._proxy_enable(cfg, 8097)
 
-    assert rc == 3
+    assert ok is False
     assert proxyguard.env_has_proxy() is False          # env 안 씀 → Claude 직결 정상
     # api_log_enabled 는 기록만 됨(가디언 없음 → 자동 재시도 없음, 사용자가 'proxy on' 재실행)
     assert json.loads(cfg.read_text(encoding="utf-8"))["api_log_enabled"] is True
 
 
 def test_setup_writes_env_when_proxy_healthy(tmp_path, monkeypatch, stub_os_side_effects):
-    """시나리오 2: 프록시가 serve 하면 proxy-setup 이 검증 후 env 기록(exit 0)."""
+    """시나리오 2: 프록시가 serve 하면 _proxy_enable(proxy on) 이 검증 후 env 기록(ok=True)."""
     _isolate(monkeypatch, tmp_path)
     from periscribe import proxyguard
     m = stub_os_side_effects
@@ -96,8 +96,8 @@ def test_setup_writes_env_when_proxy_healthy(tmp_path, monkeypatch, stub_os_side
     try:
         cfg = tmp_path / "config.json"
         _write_config(cfg, api_proxy_port=8098)
-        rc = m.cmd_proxy_setup(["--config", str(cfg), "--port", "8098"])
-        assert rc == 0
+        ok, _lines = m._proxy_enable(cfg, 8098)
+        assert ok is True
         assert proxyguard.env_has_proxy() is True
         env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]
         assert env["ANTHROPIC_BASE_URL"] == "https://127.0.0.1:8098"

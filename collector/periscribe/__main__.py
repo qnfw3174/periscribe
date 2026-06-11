@@ -1,14 +1,16 @@
-"""CLI 엔트리.
+"""CLI 엔트리 — 사용자 대면은 GUI 가 기본, CLI 는 커맨드 단어만(옵션 없음).
 
   periscribe                  (더블클릭/인자 없음) GUI 설치 창(토큰 붙여넣기). exe가 아니면 run.
   periscribe setup            콘솔 대화형 설치(토큰 입력). 터미널용
-  periscribe [run] [옵션]     수집 루프 실행
-  periscribe install ...      비대화형 설치(--token[/--url]). 자동화/스크립트용
+  periscribe run              수집 루프 실행(설정은 config.json)
   periscribe uninstall        자동시작 해제
+  periscribe proxy on|off|toggle|status   Claude API 프록시(로깅+통제)
+  periscribe proxy-gui        프록시 ON/OFF 토글 창
+  periscribe audit-setup      OS 쉘/프로세스 감사 켜기(관리자 1회)
 
 자동시작은 HKCU Run 레지스트리 키(관리자 권한 불필요)로 등록한다.
-
-옵션은 config.json / 환경변수(PERISCRIBE_*) / 커맨드라인 순으로 덮어쓴다.
+모든 설정은 config.json 이 담당한다(설치본: %LOCALAPPDATA%\\Periscribe\\config.json).
+개발/테스트용 숨김 옵션(-c, --dry-run, --sysmon)은 --help 에 노출하지 않는다.
 단일 exe(PyInstaller)에서도 동일하게 동작한다(sys.frozen 감지).
 """
 
@@ -117,6 +119,12 @@ def _data_dir() -> Path:
 
 def _installed_config_path() -> Path:
     return _data_dir() / "config.json"
+
+
+def _default_config_path() -> str:
+    """-c 미지정 시 config 자동 해석: 설치본(frozen)은 LOCALAPPDATA 설치 config, 소스 실행은 ./config.json.
+    (자동시작 레지스트리는 호환을 위해 계속 `run -c "<path>"` 명시 포맷으로 등록한다 — _reconcile_autostart)"""
+    return str(_installed_config_path()) if getattr(sys, "frozen", False) else "config.json"
 
 
 def _is_installed() -> bool:
@@ -270,17 +278,11 @@ def _reconcile_autostart() -> None:
 
 # ---------------- run ----------------
 def cmd_run(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog="periscribe run", description="Claude Code transcript collector")
-    p.add_argument("-c", "--config", default="config.json", help="설정 파일 경로")
-    p.add_argument("--watch-dir")
-    p.add_argument("--machine-id")
-    p.add_argument("--poll-interval", type=float)
-    p.add_argument("--backfill", type=int)
-    p.add_argument("--store-raw", action="store_true")
-    p.add_argument("--redact", action="store_true")
-    p.add_argument("--ingest-url")
-    p.add_argument("--device-token")
-    p.add_argument("--dry-run", action="store_true", help="적재 대신 stdout 출력(테스트)")
+    p = argparse.ArgumentParser(prog="periscribe run",
+                                description="수집 루프 실행(모든 설정은 config.json 이 담당)")
+    # 숨김(개발/테스트 + 자동시작 `run -c "<path>"` 호환): 사용자 대면 옵션은 없다.
+    p.add_argument("-c", "--config", default=_default_config_path(), help=argparse.SUPPRESS)
+    p.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)  # 적재 대신 stdout(테스트)
     a = p.parse_args(argv)
 
     # 단일 exe로 백그라운드 실행될 때(작업 스케줄러) 콘솔 창을 숨긴다. 진단은 log_file로.
@@ -292,14 +294,6 @@ def cmd_run(argv: list[str]) -> int:
         _reconcile_autostart()
 
     cfg = Config.load(a.config)
-    if a.watch_dir: cfg.watch_dir = a.watch_dir
-    if a.machine_id: cfg.machine_id = a.machine_id
-    if a.poll_interval is not None: cfg.poll_interval = a.poll_interval
-    if a.backfill is not None: cfg.backfill = a.backfill
-    if a.store_raw: cfg.store_raw = True
-    if a.redact: cfg.redact = True
-    if a.ingest_url: cfg.ingest_url = a.ingest_url
-    if a.device_token: cfg.device_token = a.device_token
 
     if a.dry_run:
         sink = StdoutSink()
@@ -316,35 +310,28 @@ def cmd_run(argv: list[str]) -> int:
 
 
 # ---------------- install ----------------
-def cmd_install(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog="periscribe install", description="이 PC에 Collector 설치(부팅 자동실행)")
-    p.add_argument("--token", required=True, help="웹에서 발급받은 디바이스 토큰")
-    p.add_argument("--url", default=DEFAULT_INGEST_URL,
-                   help="ingest 엔드포인트(.../functions/v1/ingest). 생략 시 내장 기본값")
-    p.add_argument("--name", default="", help="machine_id(비우면 hostname)")
-    p.add_argument("--data-dir", default=str(_data_dir()))
-    p.add_argument("--task-name", default=TASK_NAME)
-    p.add_argument("--exe", default="", help="등록할 실행 경로(기본: 자동 감지)")
-    p.add_argument("--dry-run", action="store_true", help="실제 등록 없이 계획만 출력")
-    a = p.parse_args(argv)
-
-    data = Path(a.data_dir)
+def install(token: str, name: str = "", url: str = DEFAULT_INGEST_URL, *,
+            data_dir: str | Path | None = None, task_name: str = TASK_NAME,
+            exe: str = "", dry_run: bool = False) -> int:
+    """이 PC에 Collector 설치(부팅 자동실행). CLI 표면 없음 — setup(콘솔)·GUI 설치 창이 직접 호출한다.
+    token: 웹에서 발급받은 디바이스 토큰 / name: machine_id(비우면 hostname) / url: ingest 엔드포인트."""
+    data = Path(data_dir) if data_dir else _data_dir()
     config_path = data / "config.json"
     cfg = {
-        "watch_dir": "", "machine_id": a.name, "poll_interval": 0.4,
+        "watch_dir": "", "machine_id": name, "poll_interval": 0.4,
         # 컨테이너(devcontainer) transcript 루트. devcontainer.json이 컨테이너의
         # ~/.claude/projects 를 %USERPROFILE%\periscribe-agents\<이름> 으로 바인드하므로
         # 그 부모를 기본 감시. 폴더가 없으면 discover()가 건너뛰어 무해(컨테이너 미사용 시).
         "container_root": str(Path.home() / "periscribe-agents"),
-        "ingest_url": a.url, "device_token": a.token, "batch_size": 500,
+        "ingest_url": url, "device_token": token, "batch_size": 500,
         "checkpoint_path": str(data / "checkpoints" / "offsets.json"),
         "backfill": 0, "store_raw": False, "store_thinking": False, "redact": True,
         "heartbeat_interval": 30, "log_file": str(data / "logs" / "collector.log"),
         "log_max_bytes": 5000000, "log_backups": 3,
     }
     # 등록할 명령(개별 onefile exe: 실행 중인 위치를 자동시작에 등록 → 자가치유로 위치 추종).
-    if a.exe:
-        run_cmd = f'"{a.exe}" run -c "{config_path}"'
+    if exe:
+        run_cmd = f'"{exe}" run -c "{config_path}"'
     elif getattr(sys, "frozen", False):
         run_cmd = f'"{sys.executable}" run -c "{config_path}"'
     else:
@@ -352,9 +339,9 @@ def cmd_install(argv: list[str]) -> int:
         run_cmd = f'"{pyw}" -m periscribe run -c "{config_path}"'
 
     print(f"[install] config: {config_path}")
-    print(f"[install] 자동시작 '{a.task_name}': {run_cmd}")
-    if a.dry_run:
-        print("[install] --dry-run: 실제 변경 없음")
+    print(f"[install] 자동시작 '{task_name}': {run_cmd}")
+    if dry_run:
+        print("[install] dry-run: 실제 변경 없음")
         return 0
 
     data.mkdir(parents=True, exist_ok=True)
@@ -363,10 +350,10 @@ def cmd_install(argv: list[str]) -> int:
     config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 자동 시작 등록: HKCU\...\Run (관리자 권한 불필요 → schtasks "액세스 거부" 문제 회피).
-    _set_autostart(a.task_name, run_cmd)
+    _set_autostart(task_name, run_cmd)
     # 옛 버전(schtasks)으로 설치했던 흔적이 있으면 정리.
     if os.name == "nt":
-        subprocess.call(["schtasks", "/Delete", "/TN", a.task_name, "/F"],
+        subprocess.call(["schtasks", "/Delete", "/TN", task_name, "/F"],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # 다음 로그인까지 기다리지 않고 지금 바로 백그라운드 실행.
     _start_collector(config_path)
@@ -421,10 +408,9 @@ def cmd_audit_setup(argv: list[str]) -> int:
     p = argparse.ArgumentParser(
         prog="periscribe audit-setup",
         description="OS 레벨 쉘/프로세스 실행 감사 켜기 (Sysmon 설치 + 로그읽기 권한, 관리자 1회)")
-    p.add_argument("--config", default=str(_installed_config_path()))
-    p.add_argument("--sysmon", default="", help="Sysmon64.exe 경로(생략 시 동봉/다운로드)")
-    p.add_argument("--user", default="", help="로그 읽기 권한 부여 대상 계정(기본: 현재 사용자)")
-    p.add_argument("--dry-run", action="store_true", help="실제 변경 없이 계획만 출력")
+    # 숨김(예외상황/개발용): --sysmon 은 자동 다운로드 실패 시 수동 경로 지정용.
+    p.add_argument("--sysmon", default="", help=argparse.SUPPRESS)
+    p.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
     a = p.parse_args(argv)
 
     if os.name != "nt":
@@ -440,13 +426,14 @@ def cmd_audit_setup(argv: list[str]) -> int:
     data.mkdir(parents=True, exist_ok=True)
     sysmon_cfg = data / "periscribe-sysmon.xml"
     sysmon_cfg.write_text(SYSMON_CONFIG_XML, encoding="utf-8")
-    user = a.user or _current_user()
+    user = _current_user()
     sysmon = a.sysmon or _find_sysmon(data)
+    cfg_path = _installed_config_path()
 
     print(f"[audit-setup] Sysmon 설정: {sysmon_cfg}")
     print(f"[audit-setup] Sysmon 실행파일: {sysmon or '(다운로드 예정)'}")
     print(f"[audit-setup] 로그읽기 권한 대상: {user}")
-    print(f"[audit-setup] config: {a.config}")
+    print(f"[audit-setup] config: {cfg_path}")
     if a.dry_run:
         print("[audit-setup] --dry-run: 실제 변경 없음")
         return 0
@@ -469,7 +456,7 @@ def cmd_audit_setup(argv: list[str]) -> int:
     subprocess.call(["net", "localgroup", "Event Log Readers", user, "/add"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    _enable_os_exec_in_config(Path(a.config))
+    _enable_os_exec_in_config(cfg_path)
     print("[audit-setup] 완료 ✅  컬렉터를 재시작하면(로그아웃/로그인 또는 재실행) OS 쉘/프로세스 실행을 "
           "수집합니다(웹에서 🐚 OS).")
     print("[audit-setup] 끄려면: config 의 os_exec_enabled=false + (선택) Sysmon 제거 'Sysmon64 -u'.")
@@ -509,8 +496,9 @@ def _merge_claude_env(env_updates: dict) -> None:
 
 
 def cmd_proxy_run(argv: list[str]) -> int:
+    """프록시 프로세스 실체(사용자 직접 호출 없음 — _start_proxy_process 가 spawn)."""
     p = argparse.ArgumentParser(prog="periscribe proxy-run")
-    p.add_argument("-c", "--config", default="config.json")
+    p.add_argument("-c", "--config", default=_default_config_path(), help=argparse.SUPPRESS)
     a = p.parse_args(argv)
     if getattr(sys, "frozen", False):
         _hide_console()
@@ -528,7 +516,7 @@ def cmd_proxy_run(argv: list[str]) -> int:
 def _proxy_enable(config_path: Path, port: int = 0) -> tuple[bool, list[str]]:
     """프록시 ON(컬렉터/guardian 과 무관한 독립 프로세스). lockout-safe 순서:
     프록시 프로세스 직접 기동 → 헬스 검증 → 성공 시에만 env 주입(검증 실패 시 env 안 씀 → Claude 직결 정상).
-    cmd_proxy_setup / cmd_proxy / gui_proxy 가 공유한다."""
+    cmd_proxy(proxy on) / gui_proxy / 테스트가 공유한다."""
     import time
     from . import proxycert, proxyguard, proxypolicy
     out: list[str] = []
@@ -621,43 +609,6 @@ def _proxy_status(config_path: Path) -> dict:
             "last_action": st.get("last_action")}
 
 
-def cmd_proxy_setup(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(
-        prog="periscribe proxy-setup",
-        description="Claude API 게이트웨이 켜기(인/아웃/작업 로깅 + 요청측 통제). Claude를 로컬 프록시로 경유(무관리자).")
-    p.add_argument("--config", default=str(_installed_config_path()))
-    p.add_argument("--port", type=int, default=0)
-    p.add_argument("--dry-run", action="store_true")
-    a = p.parse_args(argv)
-    from . import proxycert, proxyguard
-    cfg = Config.load(a.config)
-    port = a.port or cfg.api_proxy_port
-    print(f"[proxy-setup] settings: {_settings_json_path()}")
-    if a.dry_run:
-        certs = proxycert.ensure_certs(_data_dir())
-        print(f"[proxy-setup] CA: {certs['ca_pem']}")
-        print(f"[proxy-setup] ANTHROPIC_BASE_URL = https://127.0.0.1:{port}")
-        print("[proxy-setup] --dry-run: 변경 없음")
-        return 0
-    print(f"[proxy-setup] 프록시 기동/검증 중… (최대 {int(proxyguard.SETUP_WAIT_S)}s)")
-    ok, lines = _proxy_enable(Path(a.config), port)
-    for ln in lines:
-        print(f"[proxy-setup] {ln}")
-    if ok:
-        print("[proxy-setup] 끄기: periscribe.exe proxy-teardown (또는 proxy off)")
-    return 0 if ok else 3
-
-
-def cmd_proxy_teardown(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog="periscribe proxy-teardown")
-    p.add_argument("--config", default=str(_installed_config_path()))
-    a = p.parse_args(argv)
-    _ok, lines = _proxy_disable(Path(a.config))
-    for ln in lines:
-        print(f"[proxy-teardown] {ln}")
-    return 0
-
-
 def _proxy_status_text(s: dict) -> tuple[str, str]:
     """status dict → (짧은 라벨, 상세 설명). CLI/GUI 공유."""
     if s["state"] == "on":
@@ -677,10 +628,8 @@ def cmd_proxy(argv: list[str]) -> int:
         description="Claude API 프록시(로깅+통제) 켜기/끄기. on|off|toggle|status.")
     p.add_argument("action", nargs="?", default="status",
                    choices=["on", "off", "toggle", "status"])
-    p.add_argument("--config", default=str(_installed_config_path()))
-    p.add_argument("--port", type=int, default=0)
     a = p.parse_args(argv)
-    cfgpath = Path(a.config)
+    cfgpath = _installed_config_path()  # 설정은 설치 config 가 담당(포트 포함: api_proxy_port)
 
     if a.action == "status":
         s = _proxy_status(cfgpath)
@@ -696,7 +645,12 @@ def cmd_proxy(argv: list[str]) -> int:
         print(f"[proxy] 토글 → {action}")
 
     if action == "on":
-        ok, lines = _proxy_enable(cfgpath, a.port)
+        # 미설치 가드(gui_proxy 와 정합). off/status 는 잔재 청소·확인 용도로 미설치에서도 허용.
+        if not _is_installed():
+            print("[proxy] 컬렉터가 설치되어 있지 않습니다. periscribe.exe 를 실행해 먼저 설치하세요.",
+                  file=sys.stderr)
+            return 2
+        ok, lines = _proxy_enable(cfgpath)
     else:
         ok, lines = _proxy_disable(cfgpath)
     for ln in lines:
@@ -764,10 +718,7 @@ def cmd_setup(argv: list[str]) -> int:
         name = ""
 
     print("\n설치 중...")
-    install_args = ["--token", token, "--url", DEFAULT_INGEST_URL]
-    if name:
-        install_args += ["--name", name]
-    rc = cmd_install(install_args)
+    rc = install(token, name)
     if rc == 0:
         print("\n✓ 설치 완료! 잠시 후 웹 헬스바에 이 PC가 표시됩니다.")
         print("  백그라운드에서 자동 실행되며, 로그온할 때마다 자동 시작됩니다.")
@@ -780,10 +731,8 @@ def cmd_setup(argv: list[str]) -> int:
 
 # ---------------- uninstall ----------------
 def cmd_uninstall(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(prog="periscribe uninstall")
-    p.add_argument("--task-name", default=TASK_NAME)
-    a = p.parse_args(argv)
-    _del_autostart(a.task_name)
+    del argv  # 옵션 없음(자동시작 키 이름은 TASK_NAME 고정)
+    _del_autostart(TASK_NAME)
     _del_autostart(GUARDIAN_TASK_NAME)  # API 프록시 failsafe guardian 자동시작도 함께 해제
     # 프록시 env 정리(상주 CA 제거 + ANTHROPIC_BASE_URL 은 직결값으로 덮어씀). 키를 아예 지우면
     # 실행 중 세션이 죽은 프록시 값을 영구 유지(병합 env 는 키 삭제 미반영)하므로 직결값을 남긴다.
@@ -793,9 +742,9 @@ def cmd_uninstall(argv: list[str]) -> int:
     print("            모든 Claude 세션 종료 후에는 지워도 됩니다.")
     if os.name == "nt":
         # 옛 schtasks 설치 흔적도 제거(있으면).
-        subprocess.call(["schtasks", "/End", "/TN", a.task_name],
+        subprocess.call(["schtasks", "/End", "/TN", TASK_NAME],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.call(["schtasks", "/Delete", "/TN", a.task_name, "/F"],
+        subprocess.call(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _stop_proxy_process()  # 실행 중인 API 프록시도 함께 종료(직결 복귀)
     print("[uninstall] 자동시작 해제됨. 실행 중인 수집기는 다음 로그인부터 시작되지 않습니다.")
@@ -859,8 +808,7 @@ def gui_setup() -> int:
         status.configure(text="", text_color=MUTED)
         app.update()
         try:
-            args = ["--token", token] + (["--name", name] if name else [])
-            rc = cmd_install(args)
+            rc = install(token, name)
         except Exception as e:
             rc = 1
             status.configure(text=f"오류: {e}", text_color=ERRC)
@@ -933,10 +881,7 @@ def _gui_setup_tk() -> int:
         btn.config(state="disabled", text="설치 중…")
         root.update()
         try:
-            args = ["--token", token]
-            if name:
-                args += ["--name", name]
-            rc = cmd_install(args)
+            rc = install(token, name)
             if rc == 0:
                 messagebox.showinfo(
                     "Periscribe",
@@ -1135,8 +1080,6 @@ def main(argv: list[str] | None = None) -> int:
     _cleanup_stale_mei()  # 묵은 _MEI 임시폴더 청소(있으면)
 
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "install":
-        return cmd_install(argv[1:])
     if argv and argv[0] == "uninstall":
         return cmd_uninstall(argv[1:])
     if argv and argv[0] == "setup":
@@ -1147,10 +1090,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_audit_setup(argv[1:])
     if argv and argv[0] == "proxy-run":
         return cmd_proxy_run(argv[1:])
-    if argv and argv[0] == "proxy-setup":
-        return cmd_proxy_setup(argv[1:])
-    if argv and argv[0] == "proxy-teardown":
-        return cmd_proxy_teardown(argv[1:])
     if argv and argv[0] == "proxy":
         return cmd_proxy(argv[1:])
     if argv and argv[0] == "proxy-gui":
@@ -1165,8 +1104,23 @@ def main(argv: list[str] | None = None) -> int:
         # 소스 실행(개발): 기존처럼 로컬 config.json 으로 run.
         return cmd_run([])
 
-    # 알 수 없는 첫 인자 → run 옵션으로 취급(기존 호환: `periscribe --dry-run` 등).
-    return cmd_run(argv)
+    # 제거된 커맨드 → 대체 경로 안내(구 문서/스크립트 호환 UX).
+    removed = {
+        "install": "설치는 periscribe.exe 더블클릭(GUI) 또는 'periscribe setup'(콘솔)을 사용하세요.",
+        "proxy-setup": "'periscribe proxy on' 으로 통합됐습니다.",
+        "proxy-teardown": "'periscribe proxy off' 로 통합됐습니다.",
+    }
+    if argv[0] in removed:
+        print(f"[periscribe] '{argv[0]}' 명령은 제거됐습니다. {removed[argv[0]]}", file=sys.stderr)
+        return 2
+
+    # 대시로 시작하는 첫 인자 → run 옵션으로 취급(기존 호환: `periscribe --dry-run` 등).
+    if argv[0].startswith("-"):
+        return cmd_run(argv)
+    print(f"[periscribe] 알 수 없는 명령: {argv[0]}\n"
+          f"사용 가능: setup, run, uninstall, proxy on|off|toggle|status, proxy-gui, audit-setup",
+          file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

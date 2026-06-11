@@ -83,7 +83,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _proxy(self, method: str) -> None:
         self.close_connection = True
-        # 로컬 헬스 라우트: 업스트림 미전달로 즉시 200 "ok". guardian/proxy-setup 이 "프록시가 실제로
+        # 로컬 헬스 라우트: 업스트림 미전달로 즉시 200 "ok". proxy on(_proxy_enable) 이 "프록시가 실제로
         # serve 중인가"(소켓+우리CA TLS+핸들러 생존)를 검증하는 데 쓴다.
         if self.path.split("?")[0].rstrip("/") == proxyguard.HEALTH_PATH:
             self._respond_health()

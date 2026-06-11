@@ -1,8 +1,8 @@
 """proxyguard — Claude API 프록시 lockout 방지(자동 직결 fail-open)의 공유 primitive.
 
 핵심 원칙: **의도(config.api_log_enabled)와 라이브 상태(settings.json env)를 분리**한다.
-- api_log_enabled = "로깅을 원함". proxy-setup이 set, proxy-teardown만 clear. 컬렉터는 이것만 보고
-  프록시를 계속 되살린다.
+- api_log_enabled = "로깅을 원함". proxy on(_proxy_enable)이 set, proxy off(_proxy_disable)만 clear.
+  컬렉터는 이것만 보고 프록시를 계속 되살린다.
 - settings.json env(ANTHROPIC_BASE_URL) = "지금 Claude를 프록시로 라우팅". Claude는 settings env를
   프로세스 env에 **병합**하므로 키 추가/변경은 실행 중 세션에도 핫리로드되지만, 키 **삭제**는 이미 박힌
   값을 못 지운다 → OFF/fail-open 은 키 제거가 아니라 **직결 URL(DIRECT_BASE_URL)로 덮어쓰기**로 한다.
@@ -30,7 +30,7 @@ from typing import Any, Iterator, Optional
 # ---- 공유 상수 ----
 HEALTH_PATH = "/__periscribe_health"   # 프록시가 업스트림 미전달로 200 "ok" 응답하는 로컬 헬스 라우트
 PROBE_TIMEOUT_S = 2.0                   # 헬스 프로브 1회 타임아웃
-SETUP_WAIT_S = 15.0                     # proxy-setup이 프록시 기동을 기다리는 최대 시간
+SETUP_WAIT_S = 15.0                     # proxy on(_proxy_enable)이 프록시 기동을 기다리는 최대 시간
 GUARDIAN_TICK_S = 15.0                  # guardian 점검 주기
 DOWN_GRACE_S = 60.0                     # 프록시가 이만큼 비정상이면 env 제거(직결)
 UP_STABLE_S = 10.0                      # 프록시가 이만큼 정상이면 env 재투입(비대칭 히스테리시스 → flapping 방지)
