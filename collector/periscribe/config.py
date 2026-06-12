@@ -43,6 +43,9 @@ class Config:
     # transcript 없이 로깅 + 요청측 통제. ANTHROPIC_BASE_URL 로 Claude 를 이 프록시로 보낸다(무관리자).
     api_log_enabled: bool = False
     api_proxy_port: int = 8077
+    # 라우팅 대상 호스트. 로컬 모드=127.0.0.1(같은 PC의 프록시 서버). 중앙 모드 전환 시 서버 주소로 바꾸면
+    # 컬렉터 코드 변경 없이 그 서버로 라우팅된다(프록시 서버 본체만 그 서버에서 실행).
+    api_proxy_host: str = "127.0.0.1"
 
     # 식별
     machine_id: str = field(default_factory=socket.gethostname)

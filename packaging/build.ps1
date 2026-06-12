@@ -17,8 +17,9 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $collector = Resolve-Path (Join-Path $here "..\collector")
 $dist = Join-Path $here "dist"
 
-python -m pip install --quiet --upgrade pyinstaller customtkinter cryptography
+python -m pip install --quiet --upgrade pyinstaller customtkinter cryptography pystray pillow
 # pip 실패는 치명적이지 않다(이미 설치돼 있으면 OK, 진짜 없으면 PyInstaller 가 실패한다).
+# pystray/pillow: 컬렉터 트레이 아이콘용. cryptography: 프록시 서버 인증서용.
 
 # 옛 onedir 산출물(폴더 번들 + zip) 정리.
 if (Test-Path (Join-Path $dist "periscribe") -PathType Container) { Remove-Item (Join-Path $dist "periscribe") -Recurse -Force }
@@ -27,6 +28,8 @@ if (Test-Path (Join-Path $dist "periscribe-win.zip")) { Remove-Item (Join-Path $
 python -m PyInstaller --noconfirm --onefile --windowed --name periscribe `
   --paths "$collector" `
   --collect-all customtkinter `
+  --collect-all pystray `
+  --collect-all PIL `
   --distpath $dist `
   --workpath (Join-Path $here "build") `
   --specpath $here `
@@ -52,15 +55,15 @@ $agentExe = Join-Path $dist "periscribe-agent.exe"
 if (Test-Path $agentExe) { Write-Host "빌드 완료: $agentExe" -ForegroundColor Green }
 else { throw "빌드 실패: periscribe-agent.exe 없음" }
 
-# periscribe-proxy.exe — 프록시 ON/OFF GUI 토글 단독 배포본(더블클릭 → proxy-gui).
-# GUI(customtkinter) 번들, proxycert 의 cryptography 는 import 분석으로 자동 포함.
+# periscribe-proxy.exe — 프록시 '서버' 본체(독립 실행). 더블클릭/CLI 로 실행, 트래픽 가로채·차단·게이팅.
+# 머신 라우팅(on/off)은 컬렉터가 한다. GUI(customtkinter) 상태창 + cryptography(인증서) 포함.
 python -m PyInstaller --noconfirm --onefile --windowed --name periscribe-proxy `
   --paths "$collector" `
   --collect-all customtkinter `
   --distpath $dist `
   --workpath (Join-Path $here "build") `
   --specpath $here `
-  (Join-Path $here "run_proxy.py")
+  (Join-Path $here "run_proxyserver.py")
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller 실패(periscribe-proxy), exit=$LASTEXITCODE" }
 
 $proxyExe = Join-Path $dist "periscribe-proxy.exe"

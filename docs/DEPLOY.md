@@ -72,19 +72,21 @@ periscribe.exe audit-setup        # UAC 승격 → Sysmon 설치 + 전체 create
 
 ## 5c. Claude API 게이트웨이 (로깅 + 요청측 통제, transcript 비의존)
 Claude의 **인풋/아웃풋/작업을 transcript(Claude 자기기록) 없이** 외부 관찰자로 잡고, 요청 단계에서 통제한다.
-로컬 리버스 프록시가 Claude↔Anthropic 사이에 앉아 트래픽을 도청·중계한다(우리가 API를 호출하는 게 아니라
-Claude 트래픽을 관찰). **무관리자**. 대상 PC마다:
+리버스 프록시 서버가 Claude↔Anthropic 사이에 앉아 트래픽을 도청·중계한다(우리가 API를 호출하는 게 아니라
+Claude 트래픽을 관찰). **무관리자**. **구성: 프록시 서버(독립 프로그램) + 머신 라우팅(컬렉터 패널)으로 분리**:
 ```
-periscribe.exe proxy on           # 자체 CA 생성 + ~/.claude/settings.json env(ANTHROPIC_BASE_URL+NODE_EXTRA_CA_CERTS) 머지 + api_log_enabled=true
-# → 최초 1회만 Claude 재시작(CA가 세션 시작 시에만 로드됨). 이후 켜기/끄기는 떠 있는 세션도 무중단(env 핫리로드).
-# 사용자가 원래 쓰던 ANTHROPIC_BASE_URL(예: 사내 게이트웨이)이 있으면 켤 때 보관했다가 끌 때 복원.
+# 1) 프록시 '서버' 본체 — 독립 프로그램. 사용자가 직접 실행(지금은 각 머신, 나중엔 중앙 서버 1대).
+periscribe-proxy.exe              # 더블클릭 → 서버 실행(자체 CA 생성 + 트래픽 가로채·차단·게이팅·로깅)
+
+# 2) 머신 라우팅 ON/OFF — '머신에서 하는 일'. 컬렉터 컨트롤 패널의 토글, 또는 CLI:
+periscribe.exe proxy on           # 이 머신 Claude 를 프록시로 라우팅(서버 가동 검증 후에만). off=직결
+# → 최초 1회만 Claude 재시작(CA가 세션 시작 시에만 로드). 컬렉터 패널을 한 번 연 뒤엔 CA 사전상주로 무중단.
 ```
-또는 명령어 없이 **`periscribe-proxy.exe` 더블클릭**(별도 다운로드, 무관리자) → GUI에서 켜기/끄기.
-같은 토글은 `periscribe.exe proxy-gui` / `periscribe.exe proxy on|off|toggle|status` 로도 가능. Collector 설치가 선행돼야 한다.
-- **컬렉터와 프록시는 분리**(v0.2.2+): 프록시는 `proxy on` 이 직접 띄우는 **독립 프로세스**이고, 컬렉터는
-  프록시가 spool(`_apilog/*.jsonl`)에 쓴 로그를 다른 transcript 와 똑같이 수집·업로드만 한다(느슨한 파일 파이프라인).
-  컬렉터가 프록시를 띄우거나 감시하지 않으며 **가디언(failsafe)도 없다** — 프록시가 죽으면 자동 직결복구가 없으니
-  `proxy off` 로 수동 직결 전환한다. Claude가 우리 CA를 신뢰(NODE_EXTRA_CA_CERTS)해
+컨트롤 패널: `periscribe.exe` 더블클릭(설치됨) → 트레이 상주 창에서 프록시 ON/OFF. 창 닫기=트레이로.
+- **서버와 라우팅은 분리**: 프록시 서버(`periscribe-proxy.exe`)는 컬렉터가 띄우지 않는 **독립 프로그램**.
+  컬렉터는 이 머신의 라우팅(settings.json env)만 켜고/끈다. 서버가 spool(`_apilog/*.jsonl`)에 쓴 로그를
+  컬렉터가 다른 transcript 와 똑같이 수집·업로드한다(느슨한 파일 파이프라인). **가디언 없음** — 서버가 죽으면
+  자동 직결복구가 없으니 패널/`proxy off` 로 직결 전환한다. Claude가 우리 CA를 신뢰(NODE_EXTRA_CA_CERTS)해
   TLS 복호화 → 요청/응답을 `source='api'`, kind=user_prompt/assistant_text/tool_use/tool_result 로 매핑 →
   기존 파이프라인(E2EE) 수집 → 웹 **🛰 API**. 세션은 요청 metadata.user_id 의 session_id 로 묶임(한 대화=한 세션);
   이 id 는 transcript 의 session_id 와 같아 **같은 대화가 transcript·API 한 세션으로 합쳐짐** → 웹 상단 **출처 탭

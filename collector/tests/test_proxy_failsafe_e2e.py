@@ -1,7 +1,7 @@
 """프록시 ON/OFF(컬렉터·프록시 분리, 가디언 없음) + proxyguard env 의미 E2E.
 
 실제 ~/.claude / 레지스트리 / 설치 exe 는 건드리지 않는다: HOME·LOCALAPPDATA 를 임시폴더로 격리하고,
-OS 부작용 헬퍼(_set_autostart/_del_autostart/_start_proxy_process/_stop_proxy_process)만 no-op 으로
+OS 부작용 헬퍼(_set_autostart/_del_autostart/_start_collector)만 no-op 으로
 스텁한 뒤 **실제 _proxy_enable(proxy on) / _proxy_disable(proxy off) 코드 경로**를 돌린다.
 
 검증 시나리오:
@@ -64,31 +64,41 @@ def stub_os_side_effects(monkeypatch):
     from periscribe import __main__ as m
     monkeypatch.setattr(m, "_set_autostart", lambda *a, **k: None)
     monkeypatch.setattr(m, "_del_autostart", lambda *a, **k: None)
-    monkeypatch.setattr(m, "_start_proxy_process", lambda *a, **k: None)
-    monkeypatch.setattr(m, "_stop_proxy_process", lambda *a, **k: None)
     monkeypatch.setattr(m, "_start_collector", lambda *a, **k: None)
     return m
 
 
-def test_setup_refuses_when_proxy_dead(tmp_path, monkeypatch, stub_os_side_effects):
-    """시나리오 1: 프록시가 없으면 _proxy_enable(proxy on) 이 env 를 안 쓰고 실패(ok=False)."""
+def test_enable_refuses_when_server_dead(tmp_path, monkeypatch, stub_os_side_effects):
+    """라우팅 전용: 프록시 서버가 안 떠 있으면(헬스 실패) _proxy_enable 이 env 를 안 쓰고 거부(ok=False)."""
     _isolate(monkeypatch, tmp_path)
-    from periscribe import proxyguard
+    from periscribe import proxyguard, proxycert
     m = stub_os_side_effects
-    monkeypatch.setattr(proxyguard, "SETUP_WAIT_S", 1.5)  # 빨리 실패하도록
+    proxycert.ensure_certs(proxyguard.data_dir())          # ca.pem 은 있게(서버는 안 띄움)
     cfg = tmp_path / "config.json"
     _write_config(cfg, api_proxy_port=8097)
 
     ok, _lines = m._proxy_enable(cfg, 8097)
 
     assert ok is False
-    assert proxyguard.env_has_proxy() is False          # env 안 씀 → Claude 직결 정상
-    # api_log_enabled 는 기록만 됨(가디언 없음 → 자동 재시도 없음, 사용자가 'proxy on' 재실행)
+    assert proxyguard.env_has_proxy() is False             # 라우팅 안 걸림 → 직결 유지(lockout 방지)
+    # 의도(api_log_enabled)는 기록됨 — 서버 실행 후 다시 켜면 라우팅
     assert json.loads(cfg.read_text(encoding="utf-8"))["api_log_enabled"] is True
 
 
-def test_setup_writes_env_when_proxy_healthy(tmp_path, monkeypatch, stub_os_side_effects):
-    """시나리오 2: 프록시가 serve 하면 _proxy_enable(proxy on) 이 검증 후 env 기록(ok=True)."""
+def test_enable_refuses_when_no_ca(tmp_path, monkeypatch, stub_os_side_effects):
+    """ca.pem 이 아예 없으면(서버 한 번도 안 뜸) 라우팅 거부."""
+    _isolate(monkeypatch, tmp_path)
+    from periscribe import proxyguard
+    m = stub_os_side_effects
+    cfg = tmp_path / "config.json"
+    _write_config(cfg, api_proxy_port=8096)
+    ok, _lines = m._proxy_enable(cfg, 8096)
+    assert ok is False
+    assert proxyguard.env_has_proxy() is False
+
+
+def test_enable_routes_when_server_healthy(tmp_path, monkeypatch, stub_os_side_effects):
+    """라우팅 전용: 프록시 서버가 serve 하면 _proxy_enable 이 헬스 검증 후 env 라우팅(ok=True)."""
     _isolate(monkeypatch, tmp_path)
     from periscribe import proxyguard
     m = stub_os_side_effects
@@ -106,13 +116,11 @@ def test_setup_writes_env_when_proxy_healthy(tmp_path, monkeypatch, stub_os_side
         httpd.shutdown()
 
 
-def test_disable_overwrites_env_direct_and_stops_proxy(tmp_path, monkeypatch, stub_os_side_effects):
-    """OFF: env 를 직결로 덮어쓰기(키 삭제 아님), api_log_enabled=False, _stop_proxy_process 호출."""
+def test_disable_overwrites_env_direct(tmp_path, monkeypatch, stub_os_side_effects):
+    """OFF(라우팅): env 를 직결로 덮어쓰기(키 삭제 아님), api_log_enabled=False. 서버는 독립이라 안 건드림."""
     _isolate(monkeypatch, tmp_path)
     from periscribe import proxyguard
     m = stub_os_side_effects
-    stopped = {"n": 0}
-    monkeypatch.setattr(m, "_stop_proxy_process", lambda *a, **k: stopped.__setitem__("n", stopped["n"] + 1))
 
     PORT = 8099
     cfg = tmp_path / "config.json"
@@ -126,7 +134,6 @@ def test_disable_overwrites_env_direct_and_stops_proxy(tmp_path, monkeypatch, st
 
     ok, _lines = m._proxy_disable(cfg)
     assert ok
-    assert stopped["n"] == 1                                   # 프록시 프로세스 종료 호출됨
     assert proxyguard.env_has_proxy() is False                 # 직결
     env = json.loads(proxyguard.settings_json_path().read_text(encoding="utf-8"))["env"]
     assert env["ANTHROPIC_BASE_URL"] == proxyguard.DIRECT_BASE_URL   # 키 남고 직결값

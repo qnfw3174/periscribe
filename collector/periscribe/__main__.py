@@ -1,13 +1,14 @@
 """CLI 엔트리 — 사용자 대면은 GUI 가 기본, CLI 는 커맨드 단어만(옵션 없음).
 
-  periscribe                  (더블클릭/인자 없음) GUI 설치 창(토큰 붙여넣기). exe가 아니면 run.
+  periscribe                  (더블클릭/인자 없음) 설치됨→컨트롤 패널(트레이), 아니면 설치 창. exe 아니면 run.
   periscribe setup            콘솔 대화형 설치(토큰 입력). 터미널용
-  periscribe run              수집 루프 실행(설정은 config.json)
+  periscribe run              수집 루프 실행(설정은 config.json) — 헤드리스 백그라운드
+  periscribe panel            트레이 컨트롤 패널(상태+프록시 라우팅 토글). --tray 면 트레이 최소화로 시작
   periscribe uninstall        자동시작 해제
-  periscribe proxy on|off|toggle|status   Claude API 프록시(로깅+통제)
-  periscribe proxy-gui        프록시 ON/OFF 토글 창
+  periscribe proxy on|off|toggle|status   프록시 라우팅(머신 settings.json env 토글)
   periscribe audit-setup      OS 쉘/프로세스 감사 켜기(관리자 1회)
 
+프록시 '서버' 본체는 별도 프로그램 periscribe-proxy.exe(독립 실행). 여기선 라우팅만 건다.
 자동시작은 HKCU Run 레지스트리 키(관리자 권한 불필요)로 등록한다.
 모든 설정은 config.json 이 담당한다(설치본: %LOCALAPPDATA%\\Periscribe\\config.json).
 개발/테스트용 숨김 옵션(-c, --dry-run, --sysmon)은 --help 에 노출하지 않는다.
@@ -207,6 +208,26 @@ def _collector_exe() -> Path | None:
     return None
 
 
+_SINGLE_INST_HANDLE = None
+
+
+def _acquire_single_instance() -> bool:
+    """수집기 단일 인스턴스 보장. 이미 떠 있으면 False(이 인스턴스 종료). Windows 네임드 뮤텍스(세션 한정).
+    dev/비Windows 는 가드 없이 True. 가드 실패 시도 True(중복 위험 < 미수집 위험)."""
+    global _SINGLE_INST_HANDLE
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        h = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\PeriscribeCollector")
+        if ctypes.windll.kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
+            return False
+        _SINGLE_INST_HANDLE = h                            # 핸들 유지(프로세스 생존 동안 뮤텍스 보유)
+        return True
+    except Exception:
+        return True
+
+
 def _start_collector(config_path: Path) -> None:
     """수집기를 분리된 백그라운드 프로세스(창 없음)로 즉시 실행한다."""
     if getattr(sys, "frozen", False):
@@ -223,36 +244,8 @@ def _start_collector(config_path: Path) -> None:
         pass
 
 
-def _start_proxy_process(config_path: Path) -> None:
-    """API 프록시를 분리된 백그라운드 프로세스(창 없음)로 직접 띄운다. 컬렉터와 무관한 독립 프로세스.
-    'proxy on' 이 호출한다(컬렉터 supervision/guardian 없음 → 죽으면 'proxy off' 로 수동 직결)."""
-    exe = str(_collector_exe() or sys.executable)
-    if getattr(sys, "frozen", False):
-        args = [exe, "proxy-run", "-c", str(config_path)]
-    else:
-        pyw = str(Path(sys.executable).with_name("pythonw.exe"))
-        args = [pyw, "-m", "periscribe", "proxy-run", "-c", str(config_path)]
-    flags = 0
-    if os.name == "nt":
-        flags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
-    try:
-        subprocess.Popen(args, env=_child_env(), creationflags=flags, close_fds=True)
-    except Exception:
-        pass
-
-
-def _stop_proxy_process() -> None:
-    """실행 중인 API 프록시(proxy-run) 프로세스를 종료한다('proxy off'). Windows 전용."""
-    if os.name != "nt":
-        return
-    ps = ("Get-CimInstance Win32_Process -Filter \"Name='periscribe.exe'\" | "
-          "Where-Object { $_.CommandLine -match 'proxy-run' } | "
-          "ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }")
-    try:
-        subprocess.call(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
+# [분리] 프록시 '서버'는 독립 프로그램(periscribe-proxy.exe)이다 — 컬렉터가 spawn/kill 하지 않는다.
+# 컬렉터는 라우팅(settings.json env)만 건다(_proxy_enable/_proxy_disable). 서버 생명주기는 사용자가 관리.
 
 
 def _reconcile_autostart() -> None:
@@ -292,6 +285,10 @@ def cmd_run(argv: list[str]) -> int:
     # 자가치유: 현재 exe 위치로 자동시작 값을 동기화(부팅/수동 실행 시 1회). exe를 옮겨도 깨지지 않게.
     if not a.dry_run:
         _reconcile_autostart()
+        # 단일 인스턴스: 이미 수집기가 떠 있으면 조용히 종료(패널/자동시작/설치가 각각 띄워도 1개만).
+        if not _acquire_single_instance():
+            print("[periscribe] 이미 수집기가 실행 중 — 중복 인스턴스 종료.")
+            return 0
 
     cfg = Config.load(a.config)
 
@@ -463,19 +460,16 @@ def cmd_audit_setup(argv: list[str]) -> int:
     return 0
 
 
-# ---------------- Claude API 게이트웨이(로컬 프록시: 로깅 + 요청측 통제) ----------------
+# ---------------- Claude API 프록시 라우팅(머신 일: settings.json env on/off) ----------------
+# 프록시 '서버' 본체는 독립 프로그램(periscribe-proxy.exe). 여기선 이 머신의 Claude 를 그 서버로
+# 향하게/직결로 되돌리는 **라우팅**만 한다(CA 생성·서버 실행은 서버 프로그램의 몫).
 def _settings_json_path() -> Path:
     return Path.home() / ".claude" / "settings.json"
 
 
-def _proxy_policy_path() -> Path:
-    return _data_dir() / "proxy-policy.json"
-
-
-def _proxy_spool_path(cfg) -> Path:
-    import re
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", cfg.machine_id or "host") or "host"
-    return Path(cfg.watch_dir) / "_apilog" / f"{safe}.jsonl"
+def _ca_pem_path() -> Path:
+    """프록시 서버(periscribe-proxy.exe)가 생성·공유하는 CA. 컬렉터는 경로만 참조(crypto 미사용)."""
+    return _data_dir() / "ca.pem"
 
 
 def _set_config_keys(p: Path, keys: dict) -> None:
@@ -490,122 +484,88 @@ def _set_config_keys(p: Path, keys: dict) -> None:
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _merge_claude_env(env_updates: dict) -> None:
-    from . import proxyguard
-    proxyguard.merge_settings_env(env_updates)
-
-
-def cmd_proxy_run(argv: list[str]) -> int:
-    """프록시 프로세스 실체(사용자 직접 호출 없음 — _start_proxy_process 가 spawn)."""
-    p = argparse.ArgumentParser(prog="periscribe proxy-run")
-    p.add_argument("-c", "--config", default=_default_config_path(), help=argparse.SUPPRESS)
-    a = p.parse_args(argv)
-    if getattr(sys, "frozen", False):
-        _hide_console()
-    from . import apiproxy, proxycert
-    cfg = Config.load(a.config)
-    certs = proxycert.ensure_certs(_data_dir())
-    spool = _proxy_spool_path(cfg)
-    policy = _proxy_policy_path()
-    apiproxy.run_proxy(cfg.machine_id, cfg.api_proxy_port, str(spool), str(policy),
-                       certs["server_pem"], certs["server_key"],
-                       logger=lambda m: print(m, file=sys.stderr, flush=True))
-    return 0
+def _proxy_base_url(cfg) -> str:
+    host = getattr(cfg, "api_proxy_host", "127.0.0.1") or "127.0.0.1"
+    return f"https://{host}:{cfg.api_proxy_port}"
 
 
 def _proxy_enable(config_path: Path, port: int = 0) -> tuple[bool, list[str]]:
-    """프록시 ON(컬렉터/guardian 과 무관한 독립 프로세스). lockout-safe 순서:
-    프록시 프로세스 직접 기동 → 헬스 검증 → 성공 시에만 env 주입(검증 실패 시 env 안 씀 → Claude 직결 정상).
-    cmd_proxy(proxy on) / gui_proxy / 테스트가 공유한다."""
+    """프록시 라우팅 ON(머신 일). 서버 생명주기엔 관여 안 함 — 독립 periscribe-proxy.exe 가 떠 있어야 함.
+    lockout-safe: 서버가 실제 가동 중(헬스 OK)일 때만 라우팅을 건다. 아니면 직결 유지(거부).
+    cmd_proxy(on) / 트레이 패널 / 테스트가 공유한다."""
     import time
-    from . import proxycert, proxyguard, proxypolicy
+    from . import proxyguard
     out: list[str] = []
     cfg = Config.load(str(config_path))
-    port = port or cfg.api_proxy_port
-    certs = proxycert.ensure_certs(_data_dir())
-    base_url = f"https://127.0.0.1:{port}"
+    if port:
+        cfg.api_proxy_port = port
+    port = cfg.api_proxy_port
+    ca_pem = _ca_pem_path()
+    base_url = _proxy_base_url(cfg)
 
-    # 1) 설정 기록 + 정책 파일 보장.
+    # 의도 기록(로깅 원함). 정책 파일/CA 생성은 프록시 서버의 몫.
     _set_config_keys(config_path, {"api_log_enabled": True, "api_proxy_port": port})
-    proxypolicy.ensure_policy_file(str(_proxy_policy_path()))
 
-    # 2) 프록시 프로세스를 직접 띄운다(이미 serve 중이 아니면). 컬렉터와 무관한 독립 프로세스.
-    if not proxyguard.port_alive(port):
-        _start_proxy_process(config_path)
-
-    # 3) 프록시가 "실제로 serve" 할 때까지 검증(최대 SETUP_WAIT_S). 헬스 프로브 성공해야만 다음으로.
-    deadline = time.time() + proxyguard.SETUP_WAIT_S
-    healthy = False
-    while time.time() < deadline:
-        if proxyguard.port_alive(port) and proxyguard.health_probe(port, certs["ca_pem"]):
-            healthy = True
-            break
-        time.sleep(0.5)
-
-    # 4) 검증 성공 시에만 env 기록(= Claude 라우팅 전환). 실패하면 env 안 씀 → Claude 는 계속 직결로 정상.
-    if not healthy:
-        out.append("⚠ 프록시가 제한시간 내 기동/응답하지 않아 env 미기록(Claude 직결로 정상).")
-        out.append(f"  다시 'proxy on' 으로 재시도하세요. 진단: {cfg.log_file or 'config 의 log_file'}")
+    # 서버가 한 번도 안 떴으면 CA 가 없다 → 라우팅 불가(서버 먼저 실행해야 함).
+    if not ca_pem.is_file():
+        out.append("⚠ 프록시 서버가 아직 실행된 적이 없습니다(CA 없음).")
+        out.append("  periscribe-proxy.exe 를 먼저 실행한 뒤 다시 켜세요(직결 유지).")
         return False, out
-    # 핫리로드 적용 범위 판정: CA(NODE_EXTRA_CA_CERTS)는 Node 가 시작 시에만 읽는다. 이번 enable 전에
-    # 이미 상주해 있었다면 떠 있는 세션도 base_url 핫리로드만으로 무중단 전환되지만, 최초 1회는 아니다.
+
+    # 서버 가동 검증(죽은 프록시로 라우팅하면 Claude lockout). 성공해야만 env 라우팅.
+    healthy = proxyguard.port_alive(port) and proxyguard.health_probe(port, str(ca_pem))
+    if not healthy:
+        out.append("⚠ 프록시 서버가 응답하지 않습니다(미실행/다른 포트).")
+        out.append("  periscribe-proxy.exe 를 실행한 뒤 다시 켜세요(직결 유지).")
+        return False, out
+
     ca_was_resident = proxyguard.env_has_ca()
-    saved_orig = proxyguard.route_to_proxy(base_url, certs["ca_pem"])
+    saved_orig = proxyguard.route_to_proxy(base_url, str(ca_pem))
     if saved_orig:
         out.append(f"기존 ANTHROPIC_BASE_URL({saved_orig})을 보관 — 끄면 복원됩니다.")
-        out.append("  ⚠ 켜져 있는 동안 해당 게이트웨이는 우회됩니다(프록시는 api.anthropic.com 직결 중계).")
     proxyguard.write_status({"env_present": True, "proxy_healthy": True,
-                             "last_action": "enabled", "reason": "proxy enable verified",
+                             "last_action": "routing on", "reason": "server verified",
                              "at": time.strftime("%Y-%m-%d %H:%M:%S")})
     if ca_was_resident:
-        out.append(f"완료 ✅  즉시 적용(실행 중 Claude 세션 포함) → 인풋/아웃풋/작업 로깅(웹 🛰 API). base_url={base_url}")
+        out.append(f"완료 ✅  즉시 적용(실행 중 Claude 세션 포함) → 프록시 경유(웹 🛰 API). base_url={base_url}")
     else:
-        out.append(f"완료 ✅  로컬 프록시 경유 → 인풋/아웃풋/작업 로깅(웹 🛰 API). base_url={base_url}")
-        out.append("  ⚠ 지금 떠 있는 Claude 세션은 이번 1회만 재시작 필요(신뢰 CA가 세션 시작 시에만 로드됨). 이후 켜기/끄기는 무중단.")
-    out.append(f"통제(차단/레닥션/주입): {_proxy_policy_path()} 편집.")
-    out.append("  ⚠ 가디언 없음(수동 관리): 프록시가 죽으면 자동 직결복구가 없습니다 → 'proxy off' 로 직결 전환하세요.")
+        out.append(f"완료 ✅  프록시 경유(웹 🛰 API). base_url={base_url}")
+        out.append("  ⚠ 지금 떠 있는 Claude 세션은 이번 1회만 재시작 필요(신뢰 CA가 세션 시작 시에만 로드됨). 이후 토글은 무중단.")
+    out.append("  ⚠ 프록시 서버가 죽으면 자동복구 없음 → '끄기'로 직결 전환하세요.")
     return True, out
 
 
 def _proxy_disable(config_path: Path) -> tuple[bool, list[str]]:
-    """프록시 OFF. env 직결 덮어쓰기(즉시 직결) → 프록시 프로세스 종료 → 설정 off."""
+    """프록시 라우팅 OFF. env 를 직결로 덮어쓰기(즉시 직결). 프록시 서버는 독립이라 건드리지 않음."""
     import time
     from . import proxyguard
     proxyguard.strip_proxy_env()       # BASE_URL 을 직결로 덮어씀(즉시 직결). 상주 CA 는 유지 → 다음 ON 무중단
-    _stop_proxy_process()              # 독립 프록시 프로세스 종료
     _set_config_keys(config_path, {"api_log_enabled": False})
-    _del_autostart(GUARDIAN_TASK_NAME)                            # 옛 guardian 자동시작 잔재 청소
     proxyguard.write_status({"env_present": False, "proxy_healthy": False,
-                             "last_action": "teardown", "reason": "manual disable",
+                             "last_action": "routing off", "reason": "manual disable",
                              "at": time.strftime("%Y-%m-%d %H:%M:%S")})
-    return True, ["완료. 실행 중인 Claude 세션 포함 즉시 Anthropic 직결로 전환됩니다(프록시 종료·로깅 중지)."]
+    return True, ["완료. 실행 중인 Claude 세션 포함 즉시 Anthropic 직결로 전환됩니다(라우팅만 끔, 서버는 그대로)."]
 
 
 def _proxy_status(config_path: Path) -> dict:
-    """현재 프록시 상태 판정(가디언 없음). state:
-    'on'(env=우리프록시+헬스OK) / 'degraded'(env=우리프록시지만 비정상 → 수동 off 필요) / 'off'(직결)."""
+    """라우팅 상태 판정. 'on'(라우팅+서버 헬스OK) / 'degraded'(라우팅 중인데 서버 비정상) / 'off'(직결)."""
     from . import proxyguard
     cfg = Config.load(str(config_path))
     port = cfg.api_proxy_port
+    ca_pem = _ca_pem_path()
     env_present = proxyguard.env_has_proxy()
     alive = proxyguard.port_alive(port)
-    healthy = False
-    if alive:
-        try:
-            from . import proxycert
-            healthy = proxyguard.health_probe(port, proxycert.ensure_certs(_data_dir())["ca_pem"])
-        except Exception:
-            healthy = False
+    healthy = proxyguard.health_probe(port, str(ca_pem)) if (alive and ca_pem.is_file()) else False
     intent = bool(getattr(cfg, "api_log_enabled", False))
     if env_present and healthy:
         state = "on"
     elif env_present:
-        state = "degraded"   # env 가 죽은/비정상 프록시를 가리킴 → 자동복구 없음, 'proxy off' 로 직결 전환
+        state = "degraded"   # 라우팅 중인데 서버가 죽음 → 끄기로 직결 전환 필요
     else:
         state = "off"
     st = proxyguard.read_status()
     return {"state": state, "port": port, "env_present": env_present, "port_alive": alive,
-            "healthy": healthy, "intent": intent, "base_url": f"https://127.0.0.1:{port}",
+            "healthy": healthy, "intent": intent, "base_url": _proxy_base_url(cfg),
             "last_action": st.get("last_action")}
 
 
@@ -615,9 +575,9 @@ def _proxy_status_text(s: dict) -> tuple[str, str]:
         return "🟢 켜짐", f"{s['base_url']} 경유로 로깅 중입니다."
     if s["state"] == "off":
         return "⚪ 꺼짐", "Anthropic 에 직접 연결됩니다(로깅 안 함)."
-    # degraded — env 가 우리 프록시를 가리키는데 비정상(가디언 없음 → 수동 조치 필요).
-    return ("🔴 프록시 비정상", "settings 의 프록시 주소가 응답하지 않습니다. 자동복구가 없으니 "
-            "'끄기'(proxy off)로 직결 전환하세요.")
+    # degraded — 라우팅 중인데 서버가 응답 안 함.
+    return ("🔴 서버 비정상", "프록시 서버가 응답하지 않습니다. periscribe-proxy.exe 실행 확인 후 "
+            "'끄기'로 직결 전환하세요.")
 
 
 def cmd_proxy(argv: list[str]) -> int:
@@ -645,7 +605,7 @@ def cmd_proxy(argv: list[str]) -> int:
         print(f"[proxy] 토글 → {action}")
 
     if action == "on":
-        # 미설치 가드(gui_proxy 와 정합). off/status 는 잔재 청소·확인 용도로 미설치에서도 허용.
+        # 미설치 가드(패널과 정합). off/status 는 잔재 청소·확인 용도로 미설치에서도 허용.
         if not _is_installed():
             print("[proxy] 컬렉터가 설치되어 있지 않습니다. periscribe.exe 를 실행해 먼저 설치하세요.",
                   file=sys.stderr)
@@ -656,27 +616,6 @@ def cmd_proxy(argv: list[str]) -> int:
     for ln in lines:
         print(f"[proxy] {ln}")
     return 0 if ok else 3
-
-
-def _create_proxy_shortcut() -> None:
-    """바탕화면에 'Periscribe 프록시' 바로가기(collector exe proxy-gui) 1회 생성(frozen·Windows 전용).
-    타깃은 collector exe(_collector_exe) — proxy.exe 를 지워도 바로가기가 동작하도록."""
-    if os.name != "nt" or not getattr(sys, "frozen", False):
-        return
-    try:
-        col = _collector_exe()
-        exe = str(col) if col else sys.executable
-        desktop = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
-        lnk = desktop / "Periscribe 프록시.lnk"
-        if lnk.exists():
-            return
-        ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{lnk}');"
-              f"$s.TargetPath='{exe}';$s.Arguments='proxy-gui';$s.IconLocation='{exe},0';"
-              f"$s.Description='Claude API 프록시 켜기/끄기';$s.Save()")
-        subprocess.call(["powershell", "-NoProfile", "-Command", ps],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
 
 
 def cmd_guardian_run(argv: list[str]) -> int:
@@ -746,7 +685,7 @@ def cmd_uninstall(argv: list[str]) -> int:
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.call(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    _stop_proxy_process()  # 실행 중인 API 프록시도 함께 종료(직결 복귀)
+    # 프록시 서버(periscribe-proxy.exe)는 독립 프로그램 — 사용자가 직접 닫는다(여기선 라우팅만 직결 복구).
     print("[uninstall] 자동시작 해제됨. 실행 중인 수집기는 다음 로그인부터 시작되지 않습니다.")
     return 0
 
@@ -798,6 +737,16 @@ def gui_setup() -> int:
     if _is_installed():
         status.configure(text="이미 설치돼 있습니다. 새 토큰으로 다시 설치할 수 있습니다.", text_color=MUTED)
 
+    def _open_panel_and_close() -> None:
+        # 설치 후 닫지 않고 컨트롤 패널로 전환(트레이 상주). 패널을 새 프로세스로 띄우고 설치창은 종료.
+        try:
+            if getattr(sys, "frozen", False):
+                subprocess.Popen([sys.executable, "panel"], env=_child_env(), close_fds=True)
+        except Exception:
+            pass
+        app.destroy()
+        _exit_no_cleanup(0)
+
     def do_install() -> None:
         token = token_var.get().strip()
         if not token:
@@ -813,10 +762,10 @@ def gui_setup() -> int:
             rc = 1
             status.configure(text=f"오류: {e}", text_color=ERRC)
         if rc == 0:
-            status.configure(text="✓ 설치 완료! 백그라운드에서 실행 중입니다. 잠시 후 웹에 표시됩니다.",
-                             text_color=OKC)
-            btn.configure(text="완료", fg_color=OKC, hover_color=OKC, command=app.destroy, state="normal")
-            app.after(2800, app.destroy)
+            status.configure(text="✓ 설치 완료! 컨트롤 패널을 엽니다…", text_color=OKC)
+            btn.configure(text="완료", fg_color=OKC, hover_color=OKC, command=_open_panel_and_close,
+                          state="normal")
+            app.after(1500, _open_panel_and_close)
         else:
             if not status.cget("text"):
                 status.configure(text=f"설치 실패 (코드 {rc}).", text_color=ERRC)
@@ -912,105 +861,78 @@ def _gui_setup_tk() -> int:
 
 
 # ---------------- GUI 프록시 토글(더블클릭 런처) ----------------
-def gui_proxy() -> int:
-    """프록시 ON/OFF 토글 창(customtkinter). 현재 상태 표시 + 한 버튼 토글.
-    customtkinter 미번들이면 콘솔 CLI(periscribe proxy)로 폴백."""
-    # 런처화: periscribe-proxy.exe(별도 배포 exe)는 자기 위치를 시스템에 박지 않고, 실제 처리를
-    # 설치된 collector exe 에 위임한다(버전 정합 + cross-exe spawn 1회로 _MEI 안전, 이후는 same-exe).
-    if getattr(sys, "frozen", False) and Path(sys.executable).stem.lower() != "periscribe":
-        col = _collector_exe()
-        if col:
-            _create_proxy_shortcut()
-            try:
-                subprocess.Popen([str(col), "proxy-gui"], env=_child_env(), close_fds=True)
-            except Exception:
-                pass
-            return 0
-        # collector 미설치 → 아래 미설치 안내 창으로 진행(위임 불가)
-    _create_proxy_shortcut()
+def _ensure_ca_resident() -> None:
+    """프록시 서버가 만든 ca.pem 이 있으면 settings.json 에 NODE_EXTRA_CA_CERTS 를 미리 상주시킨다
+    (라우팅은 건드리지 않음 = 프록시 OFF 유지). → 이후 시작된 Claude 세션은 'proxy on' 이 무중단."""
+    try:
+        from . import proxyguard
+        ca = _ca_pem_path()
+        if ca.is_file() and not proxyguard.env_has_ca():
+            proxyguard.merge_settings_env({"NODE_EXTRA_CA_CERTS": str(ca)})
+    except Exception:
+        pass
+
+
+def gui_panel() -> int:
+    """컬렉터 컨트롤 패널(트레이 상주). 수집 상태 + 프록시 라우팅 ON/OFF 토글.
+    창 닫기 → 시스템 트레이로 최소화(종료 아님). 수집은 데몬 스레드로 계속. 트레이에서 '종료'해야 끝.
+    수집 자체는 자동시작된 헤드리스 'run' 프로세스가 담당(이중 수집 방지) — 패널은 상태/토글/트레이만.
+    미설치면 설치 창으로, GUI 미가용이면 헤드리스 수집(run)으로 폴백."""
+    if not _is_installed():
+        return gui_setup()
     try:
         import customtkinter as ctk
     except Exception:
-        print("[proxy-gui] GUI(customtkinter) 미설치 → CLI 사용: periscribe proxy on|off|status")
-        return cmd_proxy(["status"])
+        print("[panel] GUI(customtkinter) 미가용 → 헤드리스 수집으로 실행")
+        return cmd_run([])
 
     import threading
     cfgpath = _installed_config_path()
+    _ensure_ca_resident()                                   # 무중단 ON 준비(라우팅 변경 없음)
+    _start_collector(cfgpath)                               # 헤드리스 수집 보장(이미 떠 있으면 무해한 중복 기동)
+
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
     ACCENT, ACCENT_H, INK = "#6ea8fe", "#5a93e6", "#0b0d11"
     MUTED, OKC, WARN, ERRC = "#8a93a6", "#4cd585", "#ffcc66", "#ff6b6b"
 
-    # collector exe 면 config+token 으로, proxy.exe(런처)면 collector exe 해석 실패로 미설치 판정.
-    # (proxy.exe 가 여기 왔다는 건 위임 실패 = _collector_exe() None = 설치 안 됐거나 Run 깨짐)
-    _not_installed = not _is_installed() or (
-        getattr(sys, "frozen", False)
-        and Path(sys.executable).stem.lower() != "periscribe"
-        and _collector_exe() is None
-    )
-    if _not_installed:
-        # 컬렉터 미설치: 토글 UI 대신 안내 창(설정 로드가 불가능해 켜기 자체가 성립 안 함)
-        app = ctk.CTk()
-        app.title("Periscribe 프록시")
-        app.resizable(False, False)
-        app.configure(fg_color="#0f1115")
-        card = ctk.CTkFrame(app, corner_radius=16, fg_color="#171a21")
-        card.pack(padx=18, pady=18, fill="both", expand=True)
-        pad = {"padx": 26}
-        ctk.CTkLabel(card, text="🛰  Claude API 프록시",
-                     font=ctk.CTkFont(size=19, weight="bold")).pack(anchor="w", pady=(22, 2), **pad)
-        ctk.CTkLabel(card, text="컬렉터가 설치되어 있지 않습니다.", text_color=ERRC,
-                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", pady=(10, 2), **pad)
-        ctk.CTkLabel(card, text="먼저 periscribe.exe 를 실행해 설치한 뒤 다시 열어주세요.\n"
-                                "(다운로드: 웹 대시보드 → 머신 관리)",
-                     text_color=MUTED, font=ctk.CTkFont(size=12),
-                     wraplength=360, justify="left").pack(anchor="w", pady=(0, 14), **pad)
-        ctk.CTkButton(card, text="닫기", height=40, corner_radius=10,
-                      font=ctk.CTkFont(size=14, weight="bold"),
-                      fg_color=ACCENT, hover_color=ACCENT_H, text_color=INK,
-                      command=app.destroy).pack(fill="x", pady=(4, 22), **pad)
-        app.update_idletasks()
-        x = (app.winfo_screenwidth() - app.winfo_width()) // 2
-        y = (app.winfo_screenheight() - app.winfo_height()) // 3
-        app.geometry(f"+{x}+{y}")
-        app.mainloop()
-        _exit_no_cleanup(0)  # Tk 로드 onefile의 _MEI 정리 실패 팝업 회피
-        return 0
-
+    cfg0 = Config.load(str(cfgpath))
     app = ctk.CTk()
-    app.title("Periscribe 프록시")
+    app.title("Periscribe")
     app.resizable(False, False)
     app.configure(fg_color="#0f1115")
     card = ctk.CTkFrame(app, corner_radius=16, fg_color="#171a21")
     card.pack(padx=18, pady=18, fill="both", expand=True)
     pad = {"padx": 26}
 
-    ctk.CTkLabel(card, text="🛰  Claude API 프록시",
+    ctk.CTkLabel(card, text="⌖  Periscribe",
                  font=ctk.CTkFont(size=19, weight="bold")).pack(anchor="w", pady=(22, 2), **pad)
-    ctk.CTkLabel(card, text="Claude ↔ Anthropic 트래픽 로깅 + 통제", text_color=MUTED,
+    ctk.CTkLabel(card, text=f"머신 {cfg0.machine_id} · 수집 중(백그라운드)", text_color=MUTED,
                  font=ctk.CTkFont(size=12)).pack(anchor="w", pady=(0, 16), **pad)
 
+    ctk.CTkLabel(card, text="🛰  Claude API 프록시 (라우팅)", text_color=MUTED,
+                 font=ctk.CTkFont(size=12)).pack(anchor="w", **pad)
     state_lbl = ctk.CTkLabel(card, text="상태 확인 중…", font=ctk.CTkFont(size=15, weight="bold"))
-    state_lbl.pack(anchor="w", **pad)
+    state_lbl.pack(anchor="w", pady=(2, 0), **pad)
     detail_lbl = ctk.CTkLabel(card, text="", text_color=MUTED, font=ctk.CTkFont(size=11),
                               wraplength=360, justify="left")
-    detail_lbl.pack(anchor="w", pady=(2, 14), **pad)
+    detail_lbl.pack(anchor="w", pady=(2, 12), **pad)
 
     btn = ctk.CTkButton(card, text="…", height=44, corner_radius=10,
                         font=ctk.CTkFont(size=15, weight="bold"),
                         fg_color=ACCENT, hover_color=ACCENT_H, text_color=INK)
-    btn.pack(fill="x", pady=(4, 14), **pad)
+    btn.pack(fill="x", pady=(4, 12), **pad)
 
     msg_lbl = ctk.CTkLabel(card, text="", text_color=MUTED, font=ctk.CTkFont(size=11),
                            wraplength=360, justify="left")
-    msg_lbl.pack(anchor="w", pady=(0, 18), **pad)
+    msg_lbl.pack(anchor="w", pady=(0, 16), **pad)
 
-    ui = {"busy": False}
+    ui = {"busy": False, "tray": None}
 
     def refresh() -> None:
         try:
             s = _proxy_status(cfgpath)
-        except Exception as e:  # noqa: BLE001 — config 손상 등: 창은 유지하고 상태만 표기
+        except Exception as e:  # noqa: BLE001
             state_lbl.configure(text="⚠ 상태 확인 실패", text_color=ERRC)
             detail_lbl.configure(text=str(e))
             btn.configure(text="프록시 켜기(재시도)", fg_color=ACCENT, hover_color=ACCENT_H,
@@ -1018,7 +940,7 @@ def gui_proxy() -> int:
             return
         label, detail = _proxy_status_text(s)
         color = {"on": OKC, "off": MUTED, "degraded": WARN}.get(s["state"], MUTED)
-        if s["state"] == "degraded" and s["env_present"] and not s["healthy"]:
+        if s["state"] == "degraded":
             color = ERRC
         state_lbl.configure(text=label, text_color=color)
         detail_lbl.configure(text=detail)
@@ -1035,8 +957,7 @@ def gui_proxy() -> int:
             return
         ui["busy"] = True
         btn.configure(state="disabled", text="처리 중…")
-        msg_lbl.configure(text=("프록시 기동/검증 중… (최대 15초)" if action == "on" else "프록시 끄는 중…"),
-                          text_color=MUTED)
+        msg_lbl.configure(text=("프록시 검증 중…" if action == "on" else "직결 전환 중…"), text_color=MUTED)
         app.update()
 
         def work() -> None:
@@ -1053,14 +974,60 @@ def gui_proxy() -> int:
             app.after(0, done)
         threading.Thread(target=work, daemon=True).start()
 
+    # ----- 트레이(닫기→트레이, 종료는 트레이 메뉴) -----
+    def _make_tray():
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+        except Exception:
+            return None
+        img = Image.new("RGB", (64, 64), "#0f1115")
+        d = ImageDraw.Draw(img)
+        d.ellipse((16, 16, 48, 48), fill="#6ea8fe")
+        def _open(icon, item):
+            app.after(0, _show)
+        def _quit(icon, item):
+            app.after(0, _real_quit)
+        return pystray.Icon("periscribe", img, "Periscribe",
+                            menu=pystray.Menu(pystray.MenuItem("열기", _open),
+                                              pystray.MenuItem("종료", _quit)))
+
+    def _show() -> None:
+        app.deiconify()
+        app.lift()
+        refresh()
+
+    def _to_tray() -> None:
+        if ui["tray"] is None:
+            ui["tray"] = _make_tray()
+            if ui["tray"] is not None:
+                threading.Thread(target=ui["tray"].run, daemon=True).start()
+        if ui["tray"] is not None:
+            app.withdraw()                                  # 트레이로 숨김
+        else:
+            app.iconify()                                   # pystray 없으면 작업표시줄로 최소화(폴백)
+
+    def _real_quit() -> None:
+        try:
+            if ui["tray"] is not None:
+                ui["tray"].stop()
+        except Exception:
+            pass
+        app.destroy()
+        _exit_no_cleanup(0)
+
+    app.protocol("WM_DELETE_WINDOW", _to_tray)              # X 버튼 → 트레이
+
     refresh()
     app.update_idletasks()
     w, h = app.winfo_width(), app.winfo_height()
     x = (app.winfo_screenwidth() - w) // 2
     y = (app.winfo_screenheight() - h) // 3
     app.geometry(f"+{x}+{y}")
+    if "--tray" in sys.argv[1:]:                            # 자동시작 기동: 트레이 최소화로 시작
+        app.after(200, _to_tray)
     app.mainloop()
-    _exit_no_cleanup(0)  # Tk 로드 onefile의 _MEI 정리 실패 팝업 회피
+    _exit_no_cleanup(0)
     return 0
 
 
@@ -1088,19 +1055,17 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(argv[1:])
     if argv and argv[0] == "audit-setup":
         return cmd_audit_setup(argv[1:])
-    if argv and argv[0] == "proxy-run":
-        return cmd_proxy_run(argv[1:])
+    if argv and argv[0] == "panel":
+        return gui_panel()                  # 트레이 컨트롤 패널(--tray 면 트레이 최소화로 시작)
     if argv and argv[0] == "proxy":
-        return cmd_proxy(argv[1:])
-    if argv and argv[0] == "proxy-gui":
-        return gui_proxy()
+        return cmd_proxy(argv[1:])          # 헤드리스 라우팅 토글(on|off|toggle|status)
     if argv and argv[0] == "guardian-run":
         return cmd_guardian_run(argv[1:])
 
     if not argv:
-        # 단일 exe 더블클릭: GUI 설치 창(설치돼 있으면 재설치 안내도 GUI에서).
+        # 단일 exe 더블클릭: 설치돼 있으면 트레이 컨트롤 패널, 아니면 설치 창.
         if getattr(sys, "frozen", False):
-            return gui_setup()
+            return gui_panel() if _is_installed() else gui_setup()
         # 소스 실행(개발): 기존처럼 로컬 config.json 으로 run.
         return cmd_run([])
 
@@ -1109,6 +1074,8 @@ def main(argv: list[str] | None = None) -> int:
         "install": "설치는 periscribe.exe 더블클릭(GUI) 또는 'periscribe setup'(콘솔)을 사용하세요.",
         "proxy-setup": "'periscribe proxy on' 으로 통합됐습니다.",
         "proxy-teardown": "'periscribe proxy off' 로 통합됐습니다.",
+        "proxy-run": "프록시 서버는 periscribe-proxy.exe 로 분리됐습니다(독립 실행).",
+        "proxy-gui": "프록시 토글은 periscribe.exe 컨트롤 패널로 이동했습니다(머신에서 라우팅).",
     }
     if argv[0] in removed:
         print(f"[periscribe] '{argv[0]}' 명령은 제거됐습니다. {removed[argv[0]]}", file=sys.stderr)
@@ -1118,7 +1085,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv[0].startswith("-"):
         return cmd_run(argv)
     print(f"[periscribe] 알 수 없는 명령: {argv[0]}\n"
-          f"사용 가능: setup, run, uninstall, proxy on|off|toggle|status, proxy-gui, audit-setup",
+          f"사용 가능: setup, run, panel, uninstall, proxy on|off|toggle|status, audit-setup",
           file=sys.stderr)
     return 2
 
