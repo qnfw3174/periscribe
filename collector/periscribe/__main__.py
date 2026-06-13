@@ -975,37 +975,104 @@ def gui_panel() -> int:
         threading.Thread(target=work, daemon=True).start()
 
     # ----- 트레이(닫기→트레이, 종료는 트레이 메뉴) -----
+    def _panel_log(msg: str) -> None:
+        """트레이 실패 사유를 보이게 — panel.log + stderr. (frozen exe 진단용)"""
+        try:
+            logdir = _data_dir() / "logs"
+            logdir.mkdir(parents=True, exist_ok=True)
+            with open(logdir / "panel.log", "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
+        try:
+            print(msg, file=sys.stderr)
+        except Exception:
+            pass
+
     def _make_tray():
         try:
             import pystray
             from PIL import Image, ImageDraw
-        except Exception:
+        except Exception as e:  # noqa: BLE001
+            _panel_log(f"[panel] 트레이 import 실패: {e!r}")
             return None
-        img = Image.new("RGB", (64, 64), "#0f1115")
-        d = ImageDraw.Draw(img)
-        d.ellipse((16, 16, 48, 48), fill="#6ea8fe")
-        def _open(icon, item):
-            app.after(0, _show)
-        def _quit(icon, item):
-            app.after(0, _real_quit)
-        return pystray.Icon("periscribe", img, "Periscribe",
-                            menu=pystray.Menu(pystray.MenuItem("열기", _open),
-                                              pystray.MenuItem("종료", _quit)))
+        try:
+            img = Image.new("RGB", (64, 64), "#0f1115")
+            d = ImageDraw.Draw(img)
+            d.ellipse((16, 16, 48, 48), fill="#6ea8fe")
+            def _open(icon, item):
+                app.after(0, _show)
+            def _quit(icon, item):
+                app.after(0, _real_quit)
+            return pystray.Icon("periscribe", img, "Periscribe",
+                                menu=pystray.Menu(pystray.MenuItem("열기", _open),
+                                                  pystray.MenuItem("종료", _quit)))
+        except Exception as e:  # noqa: BLE001
+            _panel_log(f"[panel] 트레이 아이콘 생성 실패: {e!r}")
+            return None
 
     def _show() -> None:
         app.deiconify()
         app.lift()
         refresh()
 
+    def _start_tray(icon) -> bool:
+        """아이콘을 백그라운드로 띄운다. run_detached 우선(Tk 메인루프와 공존에 안전), 미지원이면 스레드+run."""
+        try:
+            if hasattr(icon, "run_detached"):
+                icon.run_detached()
+                return True
+        except Exception as e:  # noqa: BLE001
+            _panel_log(f"[panel] run_detached 실패, 스레드로 재시도: {e!r}")
+        try:
+            def _r():
+                try:
+                    icon.run()
+                except Exception as e:  # noqa: BLE001
+                    _panel_log(f"[panel] tray run 실패: {e!r}")
+            threading.Thread(target=_r, daemon=True).start()
+            return True
+        except Exception as e:  # noqa: BLE001
+            _panel_log(f"[panel] tray 스레드 기동 실패: {e!r}")
+            return False
+
+    def _verify_tray() -> None:
+        """안전망: withdraw 후에도 아이콘이 안 떴으면 창을 복구(영영 사라지는 사고 방지)."""
+        ic = ui["tray"]
+        try:
+            visible = bool(getattr(ic, "visible", False)) if ic else False
+        except Exception:
+            visible = False
+        if not visible:
+            _panel_log("[panel] 트레이 아이콘 미표시 → 창 복구")
+            ui["tray"] = None
+            try:
+                if ic is not None:
+                    ic.stop()
+            except Exception:
+                pass
+            _show()
+            try:
+                msg_lbl.configure(text="트레이 미지원 — 창을 유지합니다 (logs\\panel.log 확인)",
+                                  text_color=WARN)
+            except Exception:
+                pass
+
     def _to_tray() -> None:
         if ui["tray"] is None:
-            ui["tray"] = _make_tray()
-            if ui["tray"] is not None:
-                threading.Thread(target=ui["tray"].run, daemon=True).start()
+            ic = _make_tray()
+            if ic is not None and _start_tray(ic):
+                ui["tray"] = ic
         if ui["tray"] is not None:
             app.withdraw()                                  # 트레이로 숨김
+            app.after(900, _verify_tray)                    # 900ms 뒤 실제 표시 확인(아니면 복구)
         else:
-            app.iconify()                                   # pystray 없으면 작업표시줄로 최소화(폴백)
+            try:
+                msg_lbl.configure(text="트레이 미지원 — 최소화로 동작 (logs\\panel.log 확인)",
+                                  text_color=WARN)
+            except Exception:
+                pass
+            app.iconify()                                   # 트레이 불가 시 작업표시줄로(창 유지)
 
     def _real_quit() -> None:
         try:

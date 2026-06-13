@@ -30,6 +30,8 @@ python -m PyInstaller --noconfirm --onefile --windowed --name periscribe `
   --collect-all customtkinter `
   --collect-all pystray `
   --collect-all PIL `
+  --hidden-import pystray._win32 `
+  --hidden-import PIL._tkinter_finder `
   --distpath $dist `
   --workpath (Join-Path $here "build") `
   --specpath $here `
