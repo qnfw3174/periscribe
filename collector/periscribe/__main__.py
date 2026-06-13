@@ -914,6 +914,15 @@ def gui_panel() -> int:
 
     import threading
     cfgpath = _installed_config_path()
+    # 트레이 의존성(pystray→six→queue, PIL)을 _start_collector 전에 미리 로드한다.
+    # 이유: 자식 컬렉터가 (특히 _mei_in_use 보호가 없는 구버전이면) 이 프로세스의 _MEI/base_library.zip 을
+    # 지울 수 있는데, 창 닫을 때(늦게) pystray 를 import 하면 그때는 zip 이 없어 FileNotFound 로 트레이가
+    # 깨진다. 미리 import 해 sys.modules 에 캐시해 두면 나중 사용은 파일을 다시 안 읽어 안전하다.
+    try:
+        import pystray as _pre_pystray  # noqa: F401
+        from PIL import Image as _pre_img, ImageDraw as _pre_draw  # noqa: F401
+    except Exception:
+        pass
     _ensure_ca_resident()                                   # 무중단 ON 준비(라우팅 변경 없음)
     _start_collector(cfgpath)                               # 헤드리스 수집 보장(이미 떠 있으면 무해한 중복 기동)
 
