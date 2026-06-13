@@ -1,73 +1,41 @@
 <#
 .SYNOPSIS
-  개별 onefile exe 3종 빌드(PyInstaller onefile). 타깃 PC엔 Python 불필요. 파일을 따로따로 받는다.
+  업계 표준 패키징: onedir 번들(PyInstaller) → Inno Setup per-user 설치 프로그램.
 .NOTES
-  결과: packaging\dist\periscribe.exe(컬렉터/프록시/guardian, GUI 설치) + periscribe-agent.exe(컨테이너 런처)
-        + periscribe-proxy.exe(프록시 ON/OFF GUI 토글).
-  컬렉터·프록시는 분리됐고(컬렉터가 프록시를 안 띄움) 가디언도 없어 onefile 동시추출 경쟁이 사라짐 →
-  단일 exe 배포로 충분하다(예전엔 proxy on 이 3개를 동시에 띄워 _MEI 추출 경쟁 크래시가 났음).
+  결과: packaging\dist\periscribe-setup.exe (설치 프로그램 하나).
+  설치 시 %LOCALAPPDATA%\Programs\Periscribe 에 3 프로그램(periscribe.exe 컬렉터 / periscribe-proxy.exe
+  서버 / periscribe-agent.exe 런처)이 _internal 런타임 공유로 깔린다. 실행 시 임시추출(_MEI) 없음 →
+  형제 _MEI 삭제 race 부류 원천 소멸(예전 onefile 의 고질병 제거).
+  데이터(config/certs/logs)는 %LOCALAPPDATA%\Periscribe 에 별도 보존.
 .EXAMPLE
   .\build.ps1
 #>
-# 주의: pip·PyInstaller 는 진행 로그를 stderr 에 뱉는다. $ErrorActionPreference=Stop 이면
-# Windows PowerShell 5.1 이 native stderr 한 줄까지 종료 오류(NativeCommandError)로 취급해
-# exit 0 인데도 빌드가 중단된다(간헐적). 그래서 Continue 로 두고 실패는 $LASTEXITCODE 로 판정한다.
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Continue"   # pip/PyInstaller stderr 로그를 종료오류로 취급하지 않게(5.1)
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$collector = Resolve-Path (Join-Path $here "..\collector")
 $dist = Join-Path $here "dist"
 
 python -m pip install --quiet --upgrade pyinstaller customtkinter cryptography pystray pillow
-# pip 실패는 치명적이지 않다(이미 설치돼 있으면 OK, 진짜 없으면 PyInstaller 가 실패한다).
-# pystray/pillow: 컬렉터 트레이 아이콘용. cryptography: 프록시 서버 인증서용.
+# pystray/pillow: 컬렉터 트레이. cryptography: 프록시 서버 인증서. (import 분석으로 자동 포함)
 
-# 옛 onedir 산출물(폴더 번들 + zip) 정리.
-if (Test-Path (Join-Path $dist "periscribe") -PathType Container) { Remove-Item (Join-Path $dist "periscribe") -Recurse -Force }
-if (Test-Path (Join-Path $dist "periscribe-win.zip")) { Remove-Item (Join-Path $dist "periscribe-win.zip") -Force }
+# 1) onedir 번들 빌드 (periscribe.spec: 3 exe 한 폴더에 런타임 공유)
+if (Test-Path (Join-Path $dist "Periscribe") -PathType Container) { Remove-Item (Join-Path $dist "Periscribe") -Recurse -Force }
+python -m PyInstaller --noconfirm --clean `
+  --distpath $dist --workpath (Join-Path $here "build") `
+  (Join-Path $here "periscribe.spec")
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller(onedir) 실패, exit=$LASTEXITCODE" }
+if (-not (Test-Path (Join-Path $dist "Periscribe\periscribe.exe"))) { throw "빌드 실패: dist\Periscribe 없음" }
+Write-Host "onedir 번들 완료: $dist\Periscribe" -ForegroundColor Green
 
-python -m PyInstaller --noconfirm --onefile --windowed --name periscribe `
-  --paths "$collector" `
-  --collect-all customtkinter `
-  --collect-all pystray `
-  --collect-all PIL `
-  --hidden-import pystray._win32 `
-  --hidden-import PIL._tkinter_finder `
-  --distpath $dist `
-  --workpath (Join-Path $here "build") `
-  --specpath $here `
-  (Join-Path $here "run_periscribe.py")
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller 실패(periscribe), exit=$LASTEXITCODE" }
+# 2) Inno Setup 으로 설치 프로그램 빌드
+$iscc = @(
+  "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+  "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+  "C:\Program Files\Inno Setup 6\ISCC.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $iscc) { throw "Inno Setup(ISCC.exe) 미설치 — winget install JRSoftware.InnoSetup 후 재시도" }
+& $iscc (Join-Path $here "periscribe.iss")
+if ($LASTEXITCODE -ne 0) { throw "Inno Setup 컴파일 실패, exit=$LASTEXITCODE" }
 
-$exe = Join-Path $dist "periscribe.exe"
-if (Test-Path $exe) { Write-Host "빌드 완료: $exe" -ForegroundColor Green }
-else { throw "빌드 실패: periscribe.exe 없음" }
-
-# periscribe-agent.exe — VS Code 없이 컨테이너에서 Claude Code 실행하는 런처.
-# 대화형 docker run -it 가 필요하므로 console exe(--console). 표준 라이브러리만 써서 작다
-# (customtkinter/cryptography 미수집).
-python -m PyInstaller --noconfirm --onefile --console --name periscribe-agent `
-  --paths "$collector" `
-  --distpath $dist `
-  --workpath (Join-Path $here "build") `
-  --specpath $here `
-  (Join-Path $here "run_agent.py")
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller 실패(periscribe-agent), exit=$LASTEXITCODE" }
-
-$agentExe = Join-Path $dist "periscribe-agent.exe"
-if (Test-Path $agentExe) { Write-Host "빌드 완료: $agentExe" -ForegroundColor Green }
-else { throw "빌드 실패: periscribe-agent.exe 없음" }
-
-# periscribe-proxy.exe — 프록시 '서버' 본체(독립 실행). 더블클릭/CLI 로 실행, 트래픽 가로채·차단·게이팅.
-# 머신 라우팅(on/off)은 컬렉터가 한다. GUI(customtkinter) 상태창 + cryptography(인증서) 포함.
-python -m PyInstaller --noconfirm --onefile --windowed --name periscribe-proxy `
-  --paths "$collector" `
-  --collect-all customtkinter `
-  --distpath $dist `
-  --workpath (Join-Path $here "build") `
-  --specpath $here `
-  (Join-Path $here "run_proxyserver.py")
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller 실패(periscribe-proxy), exit=$LASTEXITCODE" }
-
-$proxyExe = Join-Path $dist "periscribe-proxy.exe"
-if (Test-Path $proxyExe) { Write-Host "빌드 완료: $proxyExe" -ForegroundColor Green }
-else { throw "빌드 실패: periscribe-proxy.exe 없음" }
+$setup = Join-Path $dist "periscribe-setup.exe"
+if (Test-Path $setup) { Write-Host "설치 프로그램 완료: $setup" -ForegroundColor Green }
+else { throw "빌드 실패: periscribe-setup.exe 없음" }

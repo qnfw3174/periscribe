@@ -89,50 +89,9 @@ def _join_args(argv: list[str]) -> str:
     return " ".join(f'"{a}"' if " " in a else a for a in argv)
 
 
-def _mei_in_use(folder: str) -> bool:
-    """이 _MEI 폴더를 '실행 중인 다른 onefile 프로세스'가 쓰고 있는가.
-    onefile 프로세스는 자기 _MEI 의 python*.dll 을 로드(잠금)하므로, 그 DLL 을 rename 해보면 안다
-    (잠겨 있으면 OSError). → 살아 있는 형제의 _MEI(특히 base_library.zip)를 지워서 깨뜨리는 사고 방지.
-    핵심: rmtree(ignore_errors) 는 잠긴 DLL 은 건너뛰면서도 안 잠긴 base_library.zip 은 지워버려,
-    그 형제가 나중에 늦은 import(예: pystray→queue) 때 FileNotFoundError 로 죽는다."""
-    import glob as _glob
-    try:
-        dlls = _glob.glob(os.path.join(folder, "python*.dll"))
-    except Exception:
-        return True
-    if not dlls:
-        return False                      # onefile _MEI 가 아니거나 손상 → 정리 허용
-    for dll in dlls:
-        probe = dll + ".inuse_probe"
-        try:
-            os.rename(dll, probe)         # 로드된(사용 중) DLL 은 rename 실패
-            os.rename(probe, dll)         # 안 잠김 → 되돌림
-        except OSError:
-            return True                   # 잠김 = 사용 중 → 보호
-    return False
-
-
-def _cleanup_stale_mei() -> None:
-    """onefile(windowed) 빌드가 종료 시 Tk DLL 잠금으로 못 지운 '과거' _MEI 임시폴더를 청소.
-    현재 _MEIPASS + **실행 중인 형제 프로세스의 _MEI**(_mei_in_use)는 제외 — 안 그러면 그 형제의
-    base_library.zip 을 지워 늦은 import 가 깨진다(트레이/pystray 등)."""
-    if not getattr(sys, "frozen", False):
-        return
-    import glob
-    import shutil
-    import tempfile
-    cur = getattr(sys, "_MEIPASS", "")
-    for d in glob.glob(os.path.join(tempfile.gettempdir(), "_MEI*")):
-        if d == cur or not os.path.isdir(d):
-            continue
-        if _mei_in_use(d):                # 살아 있는 onefile 형제의 폴더 → 건드리지 않음
-            continue
-        shutil.rmtree(d, ignore_errors=True)  # 진짜 과거 잔재만 청소
-
-
 def _exit_no_cleanup(code: int) -> None:
-    """Tk를 로드한 onefile에서 정상 종료 시 발생하는 '_MEI 삭제 실패' 메시지박스를 피한다.
-    부트로더의 atexit 정리를 건너뛰고 즉시 종료(임시폴더는 다음 실행의 _cleanup_stale_mei가 청소)."""
+    """GUI(Tk) 종료 시 즉시 프로세스 종료. (onedir 번들이라 임시추출(_MEI)이 없어 정리할 게 없다 —
+    이름은 호환 위해 유지. 데몬 스레드(pystray 등)도 함께 종료.)"""
     if getattr(sys, "frozen", False):
         sys.stdout.flush() if sys.stdout else None
         sys.stderr.flush() if sys.stderr else None
@@ -914,15 +873,6 @@ def gui_panel() -> int:
 
     import threading
     cfgpath = _installed_config_path()
-    # 트레이 의존성(pystray→six→queue, PIL)을 _start_collector 전에 미리 로드한다.
-    # 이유: 자식 컬렉터가 (특히 _mei_in_use 보호가 없는 구버전이면) 이 프로세스의 _MEI/base_library.zip 을
-    # 지울 수 있는데, 창 닫을 때(늦게) pystray 를 import 하면 그때는 zip 이 없어 FileNotFound 로 트레이가
-    # 깨진다. 미리 import 해 sys.modules 에 캐시해 두면 나중 사용은 파일을 다시 안 읽어 안전하다.
-    try:
-        import pystray as _pre_pystray  # noqa: F401
-        from PIL import Image as _pre_img, ImageDraw as _pre_draw  # noqa: F401
-    except Exception:
-        pass
     _ensure_ca_resident()                                   # 무중단 ON 준비(라우팅 변경 없음)
     _start_collector(cfgpath)                               # 헤드리스 수집 보장(이미 떠 있으면 무해한 중복 기동)
 
@@ -1146,8 +1096,6 @@ def main(argv: list[str] | None = None) -> int:
             getattr(sys, _name).reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
-
-    _cleanup_stale_mei()  # 묵은 _MEI 임시폴더 청소(있으면)
 
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "uninstall":

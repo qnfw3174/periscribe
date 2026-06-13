@@ -38,14 +38,15 @@
 ## 3. 머신 추가 (관리자가 웹에서)
 1. 로그인 후 상단 **⚙ 머신 관리** → 머신 이름 입력 → **+ 토큰 발급**.
 2. 표시된 **디바이스 토큰**을 복사(이때 한 번만 표시됨).
-3. 그 PC에서 `periscribe.exe`를 더블클릭 → GUI 설치 창에 토큰 붙여넣기(아래 4번).
+3. 그 PC에서 `periscribe-setup.exe` 실행 → 설치(무관리자) 후 뜨는 창에 토큰 붙여넣기(아래 4번).
    잠시 후 헬스바에 🟢로 나타남.
 4. 분실/이탈 시 머신 관리에서 **revoke** → 그 토큰은 즉시 무효.
 
 ## 4. 각 PC에 설치 (Windows)
-- **단일 exe(권장, 배포 시)**: 관리자에게 받은 `periscribe.exe` **더블클릭** → 설치 창에 토큰
-  붙여넣기 → config 작성 + 부팅 자동실행 등록(무콘솔). Python 불필요. 터미널에선
-  `periscribe.exe setup`(대화형). (빌드는 `packaging/` 참고.)
+- **설치 프로그램(권장)**: 관리자에게 받은 `periscribe-setup.exe` **더블클릭** → 무관리자로
+  `%LOCALAPPDATA%\Programs\Periscribe`에 설치(컬렉터+프록시 서버+에이전트) → 첫 실행 창에 토큰
+  붙여넣기 → 자동시작 등록. 실행 시 임시추출 없는 **onedir** 구조(빌드는 `packaging/build.ps1`
+  = PyInstaller onedir + Inno Setup). **제거는 "설정 → 앱"(프로그램 추가/제거)**.
 - **소스 실행(개발/빌드 전)**: 저장소를 받고 `collector/config.json`에 `ingest_url`/`device_token`을
   넣은 뒤 `python -m periscribe`.
 
