@@ -89,9 +89,33 @@ def _join_args(argv: list[str]) -> str:
     return " ".join(f'"{a}"' if " " in a else a for a in argv)
 
 
+def _mei_in_use(folder: str) -> bool:
+    """이 _MEI 폴더를 '실행 중인 다른 onefile 프로세스'가 쓰고 있는가.
+    onefile 프로세스는 자기 _MEI 의 python*.dll 을 로드(잠금)하므로, 그 DLL 을 rename 해보면 안다
+    (잠겨 있으면 OSError). → 살아 있는 형제의 _MEI(특히 base_library.zip)를 지워서 깨뜨리는 사고 방지.
+    핵심: rmtree(ignore_errors) 는 잠긴 DLL 은 건너뛰면서도 안 잠긴 base_library.zip 은 지워버려,
+    그 형제가 나중에 늦은 import(예: pystray→queue) 때 FileNotFoundError 로 죽는다."""
+    import glob as _glob
+    try:
+        dlls = _glob.glob(os.path.join(folder, "python*.dll"))
+    except Exception:
+        return True
+    if not dlls:
+        return False                      # onefile _MEI 가 아니거나 손상 → 정리 허용
+    for dll in dlls:
+        probe = dll + ".inuse_probe"
+        try:
+            os.rename(dll, probe)         # 로드된(사용 중) DLL 은 rename 실패
+            os.rename(probe, dll)         # 안 잠김 → 되돌림
+        except OSError:
+            return True                   # 잠김 = 사용 중 → 보호
+    return False
+
+
 def _cleanup_stale_mei() -> None:
-    """onefile(windowed) 빌드가 종료 시 Tk DLL 잠금으로 못 지운 과거 _MEI 임시폴더를 청소.
-    현재 실행 중인 _MEIPASS는 제외. (정리 실패 메시지박스/디스크 누적 방지)"""
+    """onefile(windowed) 빌드가 종료 시 Tk DLL 잠금으로 못 지운 '과거' _MEI 임시폴더를 청소.
+    현재 _MEIPASS + **실행 중인 형제 프로세스의 _MEI**(_mei_in_use)는 제외 — 안 그러면 그 형제의
+    base_library.zip 을 지워 늦은 import 가 깨진다(트레이/pystray 등)."""
     if not getattr(sys, "frozen", False):
         return
     import glob
@@ -101,7 +125,9 @@ def _cleanup_stale_mei() -> None:
     for d in glob.glob(os.path.join(tempfile.gettempdir(), "_MEI*")):
         if d == cur or not os.path.isdir(d):
             continue
-        shutil.rmtree(d, ignore_errors=True)  # 잠긴(사용 중) 폴더는 조용히 건너뜀
+        if _mei_in_use(d):                # 살아 있는 onefile 형제의 폴더 → 건드리지 않음
+            continue
+        shutil.rmtree(d, ignore_errors=True)  # 진짜 과거 잔재만 청소
 
 
 def _exit_no_cleanup(code: int) -> None:
@@ -994,7 +1020,8 @@ def gui_panel() -> int:
             import pystray
             from PIL import Image, ImageDraw
         except Exception as e:  # noqa: BLE001
-            _panel_log(f"[panel] 트레이 import 실패: {e!r}")
+            import traceback
+            _panel_log(f"[panel] 트레이 import 실패: {e!r}\n{traceback.format_exc()}")
             return None
         try:
             img = Image.new("RGB", (64, 64), "#0f1115")
