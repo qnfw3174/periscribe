@@ -6,7 +6,7 @@
 #define MyAppName "Periscribe"
 #define MyAppVersion "0.1.1"
 #define MyAppPublisher "Periscribe"
-#define DistDir "C:\_pj\_periscribe\packaging\dist\Periscribe"
+#define DistDir "C:\_pj\_periscribe\packaging\dist\periscribe"
 #define PkgDir "C:\_pj\_periscribe\packaging"
 
 [Setup]
@@ -40,7 +40,6 @@ Source: "{#PkgDir}\uninstall-cleanup.ps1"; DestDir: "{app}"; Flags: ignoreversio
 
 [Icons]
 Name: "{group}\Periscribe"; Filename: "{app}\periscribe.exe"
-Name: "{group}\Periscribe 프록시 서버"; Filename: "{app}\periscribe-proxy.exe"
 Name: "{userdesktop}\Periscribe"; Filename: "{app}\periscribe.exe"; Tasks: desktopicon
 
 [Run]

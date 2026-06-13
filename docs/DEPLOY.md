@@ -43,10 +43,12 @@
 4. 분실/이탈 시 머신 관리에서 **revoke** → 그 토큰은 즉시 무효.
 
 ## 4. 각 PC에 설치 (Windows)
-- **설치 프로그램(권장)**: 관리자에게 받은 `periscribe-setup.exe` **더블클릭** → 무관리자로
-  `%LOCALAPPDATA%\Programs\Periscribe`에 설치(컬렉터+프록시 서버+에이전트) → 첫 실행 창에 토큰
-  붙여넣기 → 자동시작 등록. 실행 시 임시추출 없는 **onedir** 구조(빌드는 `packaging/build.ps1`
-  = PyInstaller onedir + Inno Setup). **제거는 "설정 → 앱"(프로그램 추가/제거)**.
+- **설치 프로그램(권장, 역할별 분리)**: 무관리자로 `%LOCALAPPDATA%\Programs\...`에 설치. 실행 시
+  임시추출 없는 **onedir** 구조(빌드 `packaging/build.ps1` = PyInstaller onedir + Inno Setup).
+  **제거는 "설정 → 앱"(프로그램 추가/제거)**.
+  - `periscribe-setup.exe` — 컬렉터(상주 + 트레이 + 라우팅). 첫 실행 창에 토큰 붙여넣기 → 자동시작 등록.
+  - `periscribe-proxy-setup.exe` — 프록시 서버(단독; **중앙 서버에도 이것만** 설치). 선택.
+  - `periscribe-agent-setup.exe` — 에이전트 런처(Docker 필요). 선택.
 - **소스 실행(개발/빌드 전)**: 저장소를 받고 `collector/config.json`에 `ingest_url`/`device_token`을
   넣은 뒤 `python -m periscribe`.
 
