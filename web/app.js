@@ -21,7 +21,13 @@
     container: document.getElementById("f-container"),
     text: document.getElementById("f-text"),
     errors: document.getElementById("f-errors"),
+    blocked: document.getElementById("f-blocked"),
   };
+
+  // 프록시가 차단한 동작인가(요청 차단/도구 게이팅). payload.blocked 는 복호화 후 평문 객체에 있다.
+  function isBlocked(ev) {
+    return !!(ev && ev.payload && ev.payload.blocked === true);
+  }
 
   // 로깅 출처 탭: all | transcript | api | os-exec. ev.source 로 분류
   // (transcript = "claude-code" 또는 미지정, api = "api", os = "os-exec").
@@ -377,6 +383,7 @@
     if (F.session.value && ev.session_id !== F.session.value) return false;
     if (F.kind.value && ev.kind !== F.kind.value) return false;
     if (F.errors.checked && !(ev.kind === "tool_result" && ev.is_error === true)) return false;
+    if (F.blocked && F.blocked.checked && !isBlocked(ev)) return false;
     if (F.severity.value) {
       const s = severityOf(ev);
       if (F.severity.value === "critical" && s !== "critical") return false;
@@ -510,7 +517,27 @@
     return `로드 ${store.size}건 중 ${shown}개 표시${totalStr}`;
   }
 
+  // 통제 현황 KPI: 로드된(복호화된) 이벤트 기준 집계. 차단/위험/머신/세션.
+  function updateControlKpis() {
+    let blocked = 0, risk = 0;
+    const machines = new Set(), sessions = new Set();
+    for (const ev of store.values()) {
+      if (isBlocked(ev)) blocked++;
+      if (severityOf(ev) === "critical") risk++;
+      if (ev.machine_id) machines.add(ev.machine_id);
+      if (ev.session_id) sessions.add(ev.session_id);
+    }
+    const set = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
+    set("kpi-blocked", blocked); set("kpi-risk", risk);
+    set("kpi-machines", machines.size); set("kpi-sessions", sessions.size);
+    const bk = document.querySelector('.kpi--block');
+    const rk = document.querySelector('.kpi--risk');
+    if (bk) bk.classList.toggle("active", !!(F.blocked && F.blocked.checked));
+    if (rk) rk.classList.toggle("active", F.severity.value === "critical");
+  }
+
   function render(scrollBottom) {
+    updateControlKpis();
     const list = Array.from(store.values()).filter(passesFilter);
     list.sort(cmpEvents);
     feedEl.innerHTML = "";
@@ -718,9 +745,17 @@
   // 머신/세션/종류/컨테이너/실패 = 서버측 필터 → DB에서 다시 조회(로드 안 된 세션도 가져옴).
   [F.machine, F.session, F.kind, F.container, F.errors].forEach((el) =>
     el && el.addEventListener("change", loadHistory));
-  // 심각도/카테고리 = 클라이언트 분류 → 로드된 것에서 즉시 필터.
-  [F.severity, F.category].forEach((el) =>
-    el.addEventListener("change", () => render(false)));
+  // 심각도/카테고리/차단 = 클라이언트 분류·복호 결과 → 로드된 것에서 즉시 필터.
+  [F.severity, F.category, F.blocked].forEach((el) =>
+    el && el.addEventListener("change", () => render(false)));
+  // 통제 현황 KPI 칩 클릭 → 해당 필터 토글.
+  const kpiBar = document.getElementById("control-kpis");
+  if (kpiBar) kpiBar.addEventListener("click", (e) => {
+    const k = e.target.closest(".kpi"); if (!k) return;
+    const which = k.dataset.kpi;
+    if (which === "blocked" && F.blocked) { F.blocked.checked = !F.blocked.checked; render(false); }
+    else if (which === "risk") { F.severity.value = (F.severity.value === "critical") ? "" : "critical"; render(false); }
+  });
   // 로깅 출처 탭 = 클라이언트 필터(이미 로드된 이벤트의 source 기준).
   const sourceTabs = document.getElementById("source-tabs");
   if (sourceTabs) sourceTabs.addEventListener("click", (e) => {

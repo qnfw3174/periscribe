@@ -61,6 +61,14 @@
     <button id="manage-devices" class="btn ghost btn-sm">⚙ 머신 관리</button>
   </div>
 
+  <!-- 통제 현황 요약(KPI). 로드된 이벤트 기준 집계. 칩 클릭 시 해당 필터 적용. -->
+  <div id="control-kpis" class="control-kpis needs-auth" title="로드된 이벤트 기준 통제 현황">
+    <button class="kpi kpi--block" data-kpi="blocked"><b id="kpi-blocked">0</b><span>🛡 차단</span></button>
+    <button class="kpi kpi--risk" data-kpi="risk"><b id="kpi-risk">0</b><span>⚠ 위험 동작</span></button>
+    <button class="kpi" data-kpi="machines"><b id="kpi-machines">0</b><span>🖥 머신</span></button>
+    <button class="kpi" data-kpi="sessions"><b id="kpi-sessions">0</b><span>💬 세션</span></button>
+  </div>
+
   <!-- 머신 관리 모달 -->
   <div id="devices-modal" class="modal" style="display:none">
     <div class="modal-card">
@@ -180,6 +188,7 @@
       <input id="f-text" type="search" placeholder="명령/텍스트 포함…" />
     </label>
     <label class="chk"><input id="f-errors" type="checkbox" /> 실패만</label>
+    <label class="chk"><input id="f-blocked" type="checkbox" /> 🛡 차단만</label>
     <button id="reload" class="btn">다시 로드</button>
     <button id="manage-sessions" class="btn ghost">🗂 세션 관리</button>
     <span id="count" class="count"></span>

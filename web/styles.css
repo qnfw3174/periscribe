@@ -110,6 +110,21 @@ body.authed #login-gate { display: none; }
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
   padding: 8px 16px; background: var(--panel-2); border-bottom: 1px solid var(--border);
 }
+/* 통제 현황 KPI 바 */
+.control-kpis { display: none; gap: 10px; flex-wrap: wrap;
+  padding: 10px 16px; background: var(--panel-2); border-bottom: 1px solid var(--border); }
+body.authed .control-kpis { display: flex; }
+.control-kpis .kpi {
+  display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 78px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+  padding: 8px 14px; cursor: pointer; color: var(--text); transition: border-color .12s, transform .06s;
+}
+.control-kpis .kpi:hover { border-color: var(--accent); }
+.control-kpis .kpi.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.control-kpis .kpi b { font-size: 20px; font-weight: 800; line-height: 1; }
+.control-kpis .kpi span { font-size: 11px; color: var(--muted); }
+.control-kpis .kpi--block b { color: #ff6b6b; }
+.control-kpis .kpi--risk b { color: #ffcc66; }
 .machine-chip {
   display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
   background: var(--bg); border: 1px solid var(--border); border-radius: 14px; padding: 3px 10px;
