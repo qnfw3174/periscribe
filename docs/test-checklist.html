@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Periscribe — 테스트 체크리스트</title>
+<style>
+  :root{--bg:#0b0d12;--panel:#10141d;--bd:#232a3a;--tx:#e8ecf4;--mut:#8a93a6;--acc:#6ea8fe;--ok:#62d99a;--warn:#ffcc66;--err:#ff6b6b}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.6 -apple-system,Segoe UI,Roboto,'Malgun Gothic',sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:30px 22px 80px}
+  h1{font-size:25px;margin:0 0 4px}
+  .sub{color:var(--mut);margin:0 0 14px}
+  h2{font-size:19px;margin:32px 0 8px;padding:8px 0 8px 12px;border-left:3px solid var(--acc);background:linear-gradient(90deg,#141925,transparent)}
+  h3{font-size:15px;margin:18px 0 6px;color:#cdd6e5}
+  code{background:#1a2030;border:1px solid var(--bd);border-radius:5px;padding:1px 6px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;color:#9fb4dd}
+  pre{background:#0c0e13;border:1px solid var(--bd);border-radius:10px;padding:10px 13px;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;color:#cdd6e5}
+  table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}
+  th,td{border:1px solid var(--bd);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#141925;color:#cdd6e5}
+  .chk{width:34px;text-align:center;font-size:16px}
+  .tag{display:inline-block;font-size:10.5px;border-radius:9px;padding:1px 7px;border:1px solid var(--bd);white-space:nowrap}
+  .auto{color:var(--ok);border-color:#2f5c44}.manual{color:var(--warn);border-color:#5c4a2a}
+  .box{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:13px 15px;margin:10px 0}
+  .ok{border-left:3px solid var(--ok)}
+  b{color:#fff}
+  td small{color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>✅ Periscribe — 테스트 체크리스트</h1>
+  <p class="sub"><span class="tag auto">자동</span> = pytest 로 사용자 개입 없이 검증됨 · <span class="tag manual">수동</span> = 실사용자가 실제 환경에서 확인</p>
+
+  <h2>A. 자동 테스트 (사용자 개입 없음)</h2>
+  <p>순수 로직·파이프라인·프록시 동작을 <b>71개 단위/통합 테스트</b>로 검증합니다. 실행:</p>
+  <pre>cd collector
+python -m pytest tests -q        # 전체
+python -m pytest tests -v        # 항목별</pre>
+  <table>
+    <tr><th>영역</th><th>테스트 파일</th><th>검증 내용</th></tr>
+    <tr><td>파싱</td><td><code>test_parser.py</code></td><td>모든 이벤트 종류, 방어적 파싱, 레닥션, container_id 스탬프, sidechain</td></tr>
+    <tr><td>수집 파이프라인</td><td><code>test_collector.py</code></td><td>EOF/백필/재시작 오프셋, 체크포인트 재개, 카탈로그, 세션 삭제, DEK 부트스트랩, container_id</td></tr>
+    <tr><td>적재(sink)</td><td><code>test_sink.py</code> · <code>test_health.py</code></td><td>NUL 제거, 키 정규화, poison 행 격리, 네트워크 오류 전파, config 검증</td></tr>
+    <tr><td>E2EE</td><td><code>test_crypto.py</code></td><td>DEK 생성, AES-256-GCM 암복호 라운드트립, RSA 봉인/해제, sink 암호화</td></tr>
+    <tr><td>프록시 통제</td><td><code>test_apiproxy.py</code></td><td>요청 차단·레닥션·주입, trailing-only 매칭, 도구 게이팅, 합성응답, 인증서(SAN/CA재사용)</td></tr>
+    <tr><td>프록시 라우팅</td><td><code>test_proxy_failsafe_e2e.py</code></td><td>서버 헬스 기반 ON/OFF, lockout 방지(직결 덮어쓰기), env 의미, orig 보관·복원</td></tr>
+    <tr><td>프록시 동시성</td><td><code>test_proxy_concurrency.py</code></td><td>32 동시요청, 반열림 연결, 스트림+헬스, 중단 스트림 복구</td></tr>
+    <tr><td>OS 감사</td><td><code>test_audit.py</code></td><td>Sysmon Claude 서브트리만 캡처, terminate 정리, deny image, ingest</td></tr>
+    <tr><td>컨테이너+프록시</td><td><code>test_agent.py</code></td><td><code>--proxy</code> docker 인자 생성, CA 없을 때 거부, bind 경고</td></tr>
+  </table>
+  <div class="box ok">위 영역은 <b>코드 변경 시 자동으로 회귀 검증</b>됩니다. GUI·Docker·브라우저·실제 Claude 가 필요한 부분은 아래 수동 테스트로 확인합니다.</div>
+
+  <h2>B. 실사용 수동 테스트 체크리스트</h2>
+  <p>실제 환경(Windows 데스크톱 / Docker / 브라우저 / 실제 Claude Code)이 필요한 항목입니다.</p>
+
+  <h3>B-1. 설치 / 제거</h3>
+  <table>
+    <tr><th class="chk">☐</th><th>기능</th><th>절차</th><th>기대 결과</th></tr>
+    <tr><td class="chk">☐</td><td>컬렉터 설치</td><td><code>periscribe-setup.exe</code> 실행 → 토큰 입력</td><td>무관리자 설치 + 트레이 패널 + 자동시작 등록. 임시폴더(_MEI) 안 생김</td></tr>
+    <tr><td class="chk">☐</td><td>프록시/에이전트 설치</td><td>각 setup.exe 실행</td><td>각자 폴더에 설치, 시작 메뉴 바로가기</td></tr>
+    <tr><td class="chk">☐</td><td>제거</td><td>설정 → 앱 → 제거</td><td>파일 삭제 + (컬렉터) 서버에 제거신호·자동시작 해제·데이터 삭제. 웹에 🗑제거됨 표시</td></tr>
+  </table>
+
+  <h3>B-2. 컬렉터 · 트레이</h3>
+  <table>
+    <tr><th class="chk">☐</th><th>기능</th><th>절차</th><th>기대 결과</th></tr>
+    <tr><td class="chk">☐</td><td>수집 → 웹 표시</td><td>Claude Code 로 한 턴 실행</td><td>잠시 후 웹 세션 피드에 프롬프트/응답/도구 이벤트 표시</td></tr>
+    <tr><td class="chk">☐</td><td>트레이 최소화</td><td>패널 창 X 클릭</td><td>트레이 아이콘으로 들어감 → 우클릭 "열기"로 복귀, "종료"로 종료</td></tr>
+    <tr><td class="chk">☐</td><td>헬스바</td><td>웹 상단 확인</td><td>이 머신이 🟢 온라인으로 표시(주기적 하트비트)</td></tr>
+    <tr><td class="chk">☐</td><td>과거 백필</td><td>웹 세션 관리 → 과거 백필</td><td>그 세션의 과거 이벤트가 처음부터 채워짐(중복 없이)</td></tr>
+    <tr><td class="chk">☐</td><td>OS 감사(선택)</td><td>관리자로 <code>audit-setup</code> → Claude 가 쉘 작업</td><td>웹 🐚 OS 탭에 프로세스 실행 이벤트(Claude 서브트리만)</td></tr>
+  </table>
+
+  <h3>B-3. 에이전트 (컨테이너 격리)</h3>
+  <table>
+    <tr><th class="chk">☐</th><th>기능</th><th>절차</th><th>기대 결과</th></tr>
+    <tr><td class="chk">☐</td><td>컨테이너 실행</td><td><code>periscribe-agent &lt;폴더&gt; --name box1</code></td><td>컨테이너에서 Claude 진입, transcript 가 웹 🐳box1 로 수집</td></tr>
+    <tr><td class="chk">☐</td><td>망 차단 정책</td><td>정책 <code>"network": false</code> 후 재실행 → 컨테이너에서 외부 접속 시도</td><td>네트워크 차단됨(접속 실패)</td></tr>
+    <tr><td class="chk">☐</td><td>작업폴더 읽기전용</td><td>정책 <code>"workspace_writable": false</code> → 파일 쓰기 시도</td><td>쓰기 거부(읽기전용)</td></tr>
+  </table>
+
+  <h3>B-4. 프록시 · 통제 (호스트)</h3>
+  <table>
+    <tr><th class="chk">☐</th><th>기능</th><th>절차</th><th>기대 결과</th></tr>
+    <tr><td class="chk">☐</td><td>프록시 ON 라우팅</td><td>프록시 서버 실행 → 패널에서 프록시 켜기 → Claude 한 턴</td><td>웹 🛰 API 에 요청/응답 기록. (최초 1회 Claude 재시작 필요할 수 있음)</td></tr>
+    <tr><td class="chk">☐</td><td>요청 차단 → "취소"</td><td>정책 <code>block_patterns:["aaaa"]</code> → 프롬프트에 <code>aaaa</code></td><td>assistant 가 "취소"로 응답(에러 아님). 다음 프롬프트는 정상</td></tr>
+    <tr><td class="chk">☐</td><td>도구 게이팅</td><td>정책 <code>gate_tool_use:true, tool_block_patterns:["\\brm\\b"]</code> → "파일 삭제해줘"</td><td>"파일 삭제 - 차단" 표시, 실제 파일 안 지워짐</td></tr>
+    <tr><td class="chk">☐</td><td>레닥션</td><td>정책 <code>redact_patterns:["TOKEN=\\S+"]</code> → 프롬프트에 토큰 포함</td><td>전송 전 마스킹([REDACTED]) — Anthropic 으로 원문 안 나감</td></tr>
+    <tr><td class="chk">☐</td><td>프록시 OFF</td><td>패널에서 프록시 끄기</td><td>즉시 Anthropic 직결로 전환(로깅 중지)</td></tr>
+  </table>
+
+  <h3>B-5. 컨테이너 + 프록시 (연계)</h3>
+  <table>
+    <tr><th class="chk">☐</th><th>기능</th><th>절차</th><th>기대 결과</th></tr>
+    <tr><td class="chk">☐</td><td>컨테이너 프록시 라우팅</td><td>① config <code>api_proxy_bind:"0.0.0.0"</code> → 프록시 서버 실행 ② <code>periscribe-agent --proxy &lt;폴더&gt;</code></td><td>컨테이너 Claude 트래픽이 웹 🛰 API 에 기록(차단 정책도 적용)</td></tr>
+    <tr><td class="chk">☐</td><td>CA 없을 때 안내</td><td>프록시 서버 한 번도 안 띄우고 <code>--proxy</code></td><td>"프록시 서버를 먼저 실행하세요" 안내 + 중단 <small>(이 분기는 자동 테스트로도 검증됨)</small></td></tr>
+  </table>
+
+  <h3>B-6. 웹 대시보드</h3>
+  <table>
+    <tr><th class="chk">☐</th><th>기능</th><th>절차</th><th>기대 결과</th></tr>
+    <tr><td class="chk">☐</td><td>로그인 + E2EE 복호</td><td>관리자 로그인 → 패스프레이즈 입력</td><td>이벤트 내용이 복호되어 표시(서버엔 암호문만)</td></tr>
+    <tr><td class="chk">☐</td><td>토큰 발급/revoke</td><td>머신 관리 → 발급 / revoke</td><td>토큰 1회 표시, revoke 시 그 머신 적재 즉시 무효</td></tr>
+    <tr><td class="chk">☐</td><td>출처 탭</td><td>전체 / Transcript / API / OS 전환</td><td>로깅 경로별로 필터링, 같은 대화는 한 세션으로 묶임</td></tr>
+    <tr><td class="chk">☐</td><td>통제 현황 KPI</td><td>차단 발생 후 헬스바 아래 확인</td><td>🛡차단 카운트 증가, "🛡 차단만" 토글 시 차단 이벤트만 표시</td></tr>
+    <tr><td class="chk">☐</td><td>위험 분류 필터</td><td>심각도 🔴크리티컬 선택</td><td>파괴/권한/자격증명 등 위험 동작만 표시</td></tr>
+    <tr><td class="chk">☐</td><td>실시간 갱신</td><td>새 이벤트 발생</td><td>새로고침 없이 피드에 즉시 추가(Realtime)</td></tr>
+  </table>
+
+  <div class="box">⚠ 제거(B-1) 테스트는 실제 데이터/토큰을 삭제·revoke 하므로, 운영 머신이 아닌 별도 테스트 환경에서 수행하세요.</div>
+
+  <p class="sub" style="margin-top:24px">관련: <code>docs/manual.html</code>(사용 설명서) · <code>collector/tests/</code>(자동 테스트 코드)</p>
+</div>
+</body>
+</html>

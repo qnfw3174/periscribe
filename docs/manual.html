@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Periscribe — 사용 설명서</title>
+<style>
+  :root{--bg:#0b0d12;--panel:#10141d;--panel2:#141925;--bd:#232a3a;--tx:#e8ecf4;--mut:#8a93a6;--acc:#6ea8fe;--ok:#62d99a;--warn:#ffcc66;--err:#ff6b6b;--vio:#b79aec}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.65 -apple-system,Segoe UI,Roboto,'Malgun Gothic',sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:30px 22px 80px}
+  h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}
+  .sub{color:var(--mut);margin:0 0 8px}
+  h2{font-size:19px;margin:34px 0 10px;padding:8px 0 8px 12px;border-left:3px solid var(--acc);background:linear-gradient(90deg,#141925,transparent)}
+  h3{font-size:15.5px;margin:20px 0 6px;color:#cdd6e5}
+  p,li{color:#d7dde8}
+  code{background:#1a2030;border:1px solid var(--bd);border-radius:5px;padding:1px 6px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;color:#9fb4dd}
+  pre{background:#0c0e13;border:1px solid var(--bd);border-radius:10px;padding:12px 14px;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;color:#cdd6e5}
+  table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13.5px}
+  th,td{border:1px solid var(--bd);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#141925;color:#cdd6e5}
+  .nav{position:sticky;top:0;background:rgba(11,13,18,.92);backdrop-filter:blur(6px);border-bottom:1px solid var(--bd);padding:10px 0;margin:0 0 10px;display:flex;flex-wrap:wrap;gap:6px}
+  .nav a{color:var(--mut);text-decoration:none;font-size:12.5px;border:1px solid var(--bd);border-radius:14px;padding:3px 10px}
+  .nav a:hover{color:var(--tx);border-color:var(--acc)}
+  .box{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:14px 16px;margin:10px 0}
+  .tip{border-left:3px solid var(--ok)}.warn{border-left:3px solid var(--warn)}.danger{border-left:3px solid var(--err)}
+  .pill{display:inline-block;font-size:11px;border-radius:10px;padding:1px 8px;border:1px solid var(--bd)}
+  .p-col{color:var(--acc);border-color:#33405c}.p-prx{color:var(--ok);border-color:#2f5c44}.p-agt{color:var(--vio);border-color:#3a2f5c}
+  b{color:#fff}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⌖ Periscribe — 사용 설명서</h1>
+  <p class="sub">AI 에이전트(Claude Code) 사용을 <b>기록·통제·검토</b>하는 시스템. 이 문서는 설치부터 운영까지를 다룹니다.</p>
+
+  <nav class="nav">
+    <a href="#overview">개요·구성</a><a href="#install">설치</a><a href="#collector">컬렉터</a>
+    <a href="#agent">에이전트(컨테이너)</a><a href="#proxy">프록시·통제</a><a href="#web">웹 대시보드</a>
+    <a href="#security">보안</a><a href="#uninstall">제거</a>
+  </nav>
+
+  <h2 id="overview">1. 개요 · 구성</h2>
+  <p>Periscribe 는 역할이 다른 <b>3개의 독립 프로그램</b>으로 구성됩니다. 필요한 것만 설치합니다.</p>
+  <table>
+    <tr><th>프로그램</th><th>역할</th><th>설치 위치</th></tr>
+    <tr><td><span class="pill p-col">periscribe</span> 컬렉터</td><td>이 PC의 AI 사용 기록을 수집해 서버로 전송. 트레이 상주 + 프록시 라우팅 토글</td><td><code>%LOCALAPPDATA%\Programs\Periscribe</code></td></tr>
+    <tr><td><span class="pill p-prx">periscribe-proxy</span> 프록시 서버</td><td>Claude↔Anthropic 트래픽을 가로채 기록·차단·통제. 단독 실행(중앙 서버에도 이것만)</td><td><code>…\Programs\Periscribe Proxy</code></td></tr>
+    <tr><td><span class="pill p-agt">periscribe-agent</span> 에이전트 런처</td><td>Docker 컨테이너에 Claude Code 를 격리 실행. Docker 필요</td><td><code>…\Programs\Periscribe Agent</code></td></tr>
+  </table>
+  <h3>데이터 흐름</h3>
+  <pre>[Claude Code] --(transcript/프록시)--> [컬렉터] --E2EE 암호화--> [Edge Function] --> [Supabase] <-- [웹 대시보드(관리자 복호)]</pre>
+  <p>수집 데이터의 <b>내용(프롬프트·응답·작업)은 종단간 암호화</b>되어 저장되고, 복호화 키를 가진 관리자만 웹에서 열람합니다. 메타데이터(머신·세션·시각·동작종류)는 인덱싱용으로 평문입니다.</p>
+  <div class="box tip">데이터(설정·인증서·로그)는 <code>%LOCALAPPDATA%\Periscribe</code> 에 별도 보관됩니다(프로그램 폴더와 분리 → 재설치에도 보존, 제거 시 삭제).</div>
+
+  <h2 id="install">2. 설치</h2>
+  <p>관리자에게 받은 <b>디바이스 토큰</b>이 필요합니다(웹 관리자가 발급). 무관리자(admin 권한 불필요)로 설치됩니다.</p>
+  <ol>
+    <li><b>컬렉터</b>: <code>periscribe-setup.exe</code> 실행 → 설치 → 첫 실행 창에 <b>토큰 붙여넣기</b> → 끝. 부팅 시 자동 시작.</li>
+    <li><b>프록시 서버(선택)</b>: <code>periscribe-proxy-setup.exe</code> 실행 → 설치. 시작 메뉴에서 실행.</li>
+    <li><b>에이전트(선택, Docker 필요)</b>: <code>periscribe-agent-setup.exe</code> 실행 → 설치.</li>
+  </ol>
+  <div class="box">실행 시 임시폴더 추출이 없는 <b>onedir</b> 구조라 빠르고 안정적입니다. 다운로드: 웹 대시보드 또는 관리자 배포 링크.</div>
+
+  <h2 id="collector">3. 컬렉터 (수집)</h2>
+  <h3>3.1 트레이 컨트롤 패널</h3>
+  <p>설치 후 <code>periscribe.exe</code>(또는 시작 메뉴 Periscribe)를 실행하면 <b>컨트롤 패널</b>이 뜹니다.</p>
+  <ul>
+    <li>머신 이름 · 수집 상태 표시</li>
+    <li><b>🛰 프록시 라우팅 ON/OFF</b> 토글 — 이 PC의 Claude 를 프록시로 보낼지 직결로 둘지</li>
+    <li>창 <b>닫기(X) → 시스템 트레이</b>로 최소화. 트레이 아이콘 우클릭 → 열기/종료. 수집은 백그라운드로 계속</li>
+  </ul>
+  <h3>3.2 수집 동작</h3>
+  <p>컬렉터는 <code>~/.claude/projects</code>(및 컨테이너 루트)의 transcript 와 spool 을 <b>0.4초 주기</b>로 따라가며 새 줄만 정규화·암호화해 전송합니다. 오프셋 체크포인트로 재시작에도 손실·중복 없이 재개합니다(<code>event_id</code> 멱등).</p>
+  <h3>3.3 과거 기록 백필</h3>
+  <p>기본은 설치 시점부터(EOF) 수집합니다. 과거 전체가 필요하면 웹 <b>세션 관리 → 과거 백필</b> 버튼으로 그 세션을 처음부터 재적재합니다.</p>
+  <h3>3.4 OS 쉘/프로세스 감사 (선택, 관리자 1회)</h3>
+  <p>transcript 비의존으로 Claude 가 실제 실행한 프로세스를 OS 레벨(Sysmon)로 보강합니다. 관리자 권한으로 <code>periscribe.exe audit-setup</code> 1회 → 이후 컬렉터가 Sysmon 이벤트에서 Claude 서브트리만 골라 수집(웹 🐚 OS).</p>
+
+  <h2 id="agent">4. 에이전트 (컨테이너 격리)</h2>
+  <p>VS Code 없이 Claude Code 를 <b>Docker 컨테이너에 격리</b> 실행합니다. 컨테이너 레벨(커널)에서 강제되는 정책이라 에이전트가 끌 수 없습니다.</p>
+  <pre>periscribe-agent &lt;작업폴더&gt; --name &lt;박스이름&gt; [--shell] [--proxy] [--policy &lt;json&gt;]</pre>
+  <table>
+    <tr><th>옵션</th><th>설명</th></tr>
+    <tr><td><code>&lt;작업폴더&gt;</code></td><td>컨테이너 <code>/workspace</code> 로 마운트할 폴더(기본: 현재)</td></tr>
+    <tr><td><code>--name</code></td><td>박스 이름 = 웹에서 🐳&lt;이름&gt; 으로 구분</td></tr>
+    <tr><td><code>--shell</code></td><td>claude 대신 bash 진입</td></tr>
+    <tr><td><code>--proxy</code></td><td><b>컨테이너 Claude 를 호스트 프록시로 라우팅</b>(로깅·통제 적용) — 아래 5장 참고</td></tr>
+    <tr><td><code>--policy</code></td><td>제어 정책 JSON 경로(생략 시 박스별 자동 생성)</td></tr>
+  </table>
+  <h3>4.1 컨테이너 제어 정책</h3>
+  <p>호스트의 정책 JSON(<code>%LOCALAPPDATA%\Periscribe\policies\&lt;박스&gt;.json</code>)을 편집하면 다음 실행부터 docker 플래그로 적용됩니다(재빌드 불필요).</p>
+  <pre>{
+  "workspace_writable": true,   // false → 작업폴더 읽기전용
+  "network": true,              // false → --network=none(망 차단)
+  "read_only_rootfs": false,    // true → 루트FS 읽기전용
+  "no_new_privileges": false,
+  "drop_all_capabilities": true,
+  "memory": null,  "cpus": null,  "pids": null   // 자원 한도
+}</pre>
+  <p>컨테이너의 <code>~/.claude</code> 는 호스트 <code>&lt;container_root&gt;/&lt;박스&gt;</code> 에 바인드되어 ① 로그인 토큰 영속 ② transcript 를 컬렉터가 자동 수집합니다.</p>
+
+  <h2 id="proxy">5. 프록시 · 통제</h2>
+  <p>프록시 서버가 Claude↔Anthropic 사이에 앉아 트래픽을 <b>기록하고 정책으로 통제</b>합니다. 자체 CA 로 TLS 를 복호화하므로 평문 검사가 가능합니다(서버 내부에서만, 서버↔Anthropic 은 정상 TLS).</p>
+  <h3>5.1 호스트(이 PC)에서 쓰기</h3>
+  <ol>
+    <li><code>periscribe-proxy.exe</code> 실행 → 프록시 서버 기동(자체 CA/인증서 자동 생성)</li>
+    <li>컬렉터 트레이 패널에서 <b>프록시 켜기</b> → 이 PC의 Claude 트래픽이 프록시 경유(웹 🛰 API)</li>
+  </ol>
+  <h3>5.2 컨테이너에서 쓰기 (<code>--proxy</code>)</h3>
+  <p>컨테이너는 호스트와 격리돼 있어 별도 설정이 필요합니다.</p>
+  <ol>
+    <li><code>%LOCALAPPDATA%\Periscribe\config.json</code> 에 <code>"api_proxy_bind": "0.0.0.0"</code> 추가 → 프록시 서버 재실행(컨테이너가 닿게 전 인터페이스로 listen)</li>
+    <li><code>periscribe-agent --proxy &lt;작업폴더&gt;</code> → 컨테이너에 프록시 주소(<code>host.docker.internal</code>)+CA 가 주입되어 통제 적용</li>
+  </ol>
+  <div class="box warn"><code>0.0.0.0</code> 바인드는 프록시 포트를 LAN 에 노출합니다(접속하려면 우리 CA 신뢰 필요). 신뢰 네트워크에서만 사용하세요.</div>
+  <h3>5.3 통제 정책 (<code>proxy-policy.json</code>)</h3>
+  <p><code>%LOCALAPPDATA%\Periscribe\proxy-policy.json</code> 을 편집하면 <b>매 요청마다 즉시 반영</b>(핫리로드, 재시작 불필요).</p>
+  <pre>{
+  "enabled": true,
+  "block_patterns": ["비밀번호", "aaaa"],      // 프롬프트에 매치 시 차단
+  "block_message": "취소",                      // 차단 시 프록시가 대신 응답할 말
+  "redact_patterns": ["TOKEN=\\S+"],            // 전송 전 마스킹([REDACTED])
+  "inject_system": "안전 가이드라인…",          // 시스템 프롬프트에 가드레일 주입
+  "gate_tool_use": true,                        // 응답측 위험 도구 차단 ON
+  "tool_block_patterns": ["\\brm\\b", "Remove-Item"],
+  "tool_block_message": "파일 삭제 - 차단"
+}</pre>
+  <table>
+    <tr><th>통제</th><th>동작</th></tr>
+    <tr><td>요청 차단</td><td>신규 프롬프트가 <code>block_patterns</code> 매치 → Anthropic 미전송, 프록시가 <code>block_message</code> 로 직접 응답(에러 아님, 세션 유지). 히스토리는 재차단 안 함</td></tr>
+    <tr><td>레닥션</td><td>전송 본문에서 <code>redact_patterns</code> 마스킹 → 민감정보가 Anthropic 으로 안 나감</td></tr>
+    <tr><td>시스템 주입</td><td><code>inject_system</code> 가드레일을 system 프롬프트에 append</td></tr>
+    <tr><td>도구 게이팅</td><td>응답의 위험 <code>tool_use</code>(예: <code>rm</code>)가 <code>tool_block_patterns</code> 매치 → 도구를 드롭하고 <code>tool_block_message</code> 표시 → Claude 가 실행할 도구를 못 받아 차단됨</td></tr>
+  </table>
+
+  <h2 id="web">6. 웹 대시보드</h2>
+  <p>관리자가 로그인해 조직 전체의 AI 활동을 실시간으로 봅니다.</p>
+  <h3>6.1 머신 추가 (토큰 발급)</h3>
+  <p><b>⚙ 머신 관리</b> → 머신 이름 입력 → <b>+ 토큰 발급</b>(한 번만 표시). 이 토큰을 해당 PC 설치 시 입력. 이탈/분실 시 <b>revoke</b> → 즉시 무효.</p>
+  <h3>6.2 세션 피드 · 출처 탭</h3>
+  <p>이벤트가 실시간으로 흐릅니다. 상단 <b>출처 탭(전체 / 📝 Transcript / 🛰 API / 🐚 OS)</b> 으로 로깅 경로별로 나눠 봅니다(같은 대화는 transcript·API 가 한 세션으로 합쳐짐).</p>
+  <h3>6.3 위험 분류 · 통제 현황</h3>
+  <ul>
+    <li><b>위험 분류</b>: 도구·명령을 자동 분류(파괴/권한/자격증명/네트워크 등)하여 심각도(🔴크리티컬/⚠경고)로 필터.</li>
+    <li><b>통제 현황 KPI</b>(헬스바 아래): <b>🛡 차단 · ⚠ 위험동작 · 🖥 머신 · 💬 세션</b> 집계. 칩을 누르면 해당 필터 적용. <b>"🛡 차단만"</b> 토글로 프록시가 실제 차단한 동작만 봅니다.</li>
+  </ul>
+  <h3>6.4 E2EE 복호</h3>
+  <p>최초 로그인 시 <b>패스프레이즈</b>로 개인키를 복원합니다(브라우저에서만). 이후 이벤트 내용이 자동 복호되어 표시됩니다. 서버에는 암호문만 있어 운영자도 내용을 못 봅니다(호스팅형 기준).</p>
+
+  <h2 id="security">7. 보안 모델</h2>
+  <ul>
+    <li><b>디바이스 토큰</b>: 각 PC는 자기 토큰만 보유 → 유출돼도 그 머신 적재만 가능, 읽기 불가.</li>
+    <li><b>RLS</b>: <code>owner_id = auth.uid()</code> → 관리자는 자기 소유 데이터만 조회.</li>
+    <li><b>E2EE</b>: 내용은 per-device DEK(AES-256-GCM)로 암호화, DEK 는 관리자 공개키로 봉인. 개인키는 서버를 거치지 않음.</li>
+    <li><b>프록시 CA</b>: localhost/host.docker.internal 한정 리프만 서명 가능. 개인키는 그 PC 로컬에만.</li>
+  </ul>
+
+  <h2 id="uninstall">8. 제거</h2>
+  <p><b>설정 → 앱</b>(프로그램 추가/제거)에서 각각 제거합니다. 컬렉터 제거 시 서버에 제거 신호(자동 revoke) + 자동시작 해제 + 데이터 폴더 삭제가 수행됩니다.</p>
+
+  <p class="sub" style="margin-top:26px">관련 문서: <code>docs/ca-behavior.html</code>(인증서 동작) · <code>docs/DEPLOY.md</code>(배포) · <code>docs/test-checklist.html</code>(테스트 체크리스트)</p>
+</div>
+</body>
+</html>
