@@ -225,6 +225,15 @@ def test_proxycert_generates_valid(tmp_path):
     san = server.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     ips = [str(ip) for ip in san.get_values_for_type(x509.IPAddress)]
     assert "127.0.0.1" in ips
+    dns = san.get_values_for_type(x509.DNSName)
+    assert "host.docker.internal" in dns   # 컨테이너(agent --proxy) 접속용 SAN
     # 재호출 시 재사용(파일 유지)
     paths2 = proxycert.ensure_certs(tmp_path)
     assert paths2["server_pem"] == paths["server_pem"]
+    # CA 만 남기고 리프 삭제 → CA 재사용 + 리프만 재발급
+    ca_before = open(paths["ca_pem"], "rb").read()
+    import os as _os
+    _os.unlink(paths["server_pem"])
+    paths3 = proxycert.ensure_certs(tmp_path)
+    assert open(paths3["ca_pem"], "rb").read() == ca_before   # CA 불변(신뢰 유지)
+    assert _os.path.isfile(paths3["server_pem"])              # 리프 재생성

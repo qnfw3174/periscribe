@@ -44,8 +44,9 @@ def serve(config_path: str, logger=None) -> None:
     spool = _spool_path(cfg)
     policy = _policy_path()
     log = logger or (lambda m: print(m, file=sys.stderr, flush=True))
+    bind = getattr(cfg, "api_proxy_bind", "127.0.0.1") or "127.0.0.1"
     apiproxy.run_proxy(cfg.machine_id, cfg.api_proxy_port, str(spool), str(policy),
-                       certs["server_pem"], certs["server_key"], logger=log)
+                       certs["server_pem"], certs["server_key"], logger=log, bind_host=bind)
 
 
 def _run_console(config_path: str) -> int:

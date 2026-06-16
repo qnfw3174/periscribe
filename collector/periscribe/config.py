@@ -46,6 +46,9 @@ class Config:
     # 라우팅 대상 호스트. 로컬 모드=127.0.0.1(같은 PC의 프록시 서버). 중앙 모드 전환 시 서버 주소로 바꾸면
     # 컬렉터 코드 변경 없이 그 서버로 라우팅된다(프록시 서버 본체만 그 서버에서 실행).
     api_proxy_host: str = "127.0.0.1"
+    # 프록시 '서버'가 리슨할 인터페이스. 127.0.0.1=호스트 전용. 도커 컨테이너(agent --proxy)나 중앙 서버로
+    # 쓰려면 0.0.0.0(전 인터페이스). 0.0.0.0 은 LAN 노출되므로 신뢰 네트워크에서만 사용.
+    api_proxy_bind: str = "127.0.0.1"
 
     # 식별
     machine_id: str = field(default_factory=socket.gethostname)

@@ -387,21 +387,25 @@ class _ProxyServer(ThreadingHTTPServer):
 
 def _make_server(machine_id: str, port: int, spool_path: str, policy_path: str,
                  cert_pem: str, cert_key: str,
-                 logger: Optional[Callable[[str], None]] = None) -> _ProxyServer:
-    """실서비스/테스트 공용 서버 조립. 테스트도 이걸 써야 실제 backlog/핸드셰이크 경로를 검증한다."""
+                 logger: Optional[Callable[[str], None]] = None,
+                 bind_host: str = "127.0.0.1") -> _ProxyServer:
+    """실서비스/테스트 공용 서버 조립. 테스트도 이걸 써야 실제 backlog/핸드셰이크 경로를 검증한다.
+    bind_host: 리슨 인터페이스. 기본 127.0.0.1(호스트 전용). 컨테이너(agent --proxy)가 닿게 하려면
+    '0.0.0.0'(전 인터페이스) — 그래야 host.docker.internal 게이트웨이로 접속 가능."""
     proxypolicy.ensure_policy_file(policy_path)
     sslctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     sslctx.load_cert_chain(certfile=cert_pem, keyfile=cert_key)
-    httpd = _ProxyServer(("127.0.0.1", port), _Handler, sslctx)
+    httpd = _ProxyServer((bind_host, port), _Handler, sslctx)
     httpd.ctx = _Ctx(machine_id, spool_path, policy_path, logger)  # type: ignore[attr-defined]
     return httpd
 
 
 def run_proxy(machine_id: str, port: int, spool_path: str, policy_path: str,
               cert_pem: str, cert_key: str,
-              logger: Optional[Callable[[str], None]] = None) -> None:
-    """프록시를 127.0.0.1:<port> 에서 serve_forever. (proxy-run 서브커맨드가 호출)"""
-    httpd = _make_server(machine_id, port, spool_path, policy_path, cert_pem, cert_key, logger)
+              logger: Optional[Callable[[str], None]] = None,
+              bind_host: str = "127.0.0.1") -> None:
+    """프록시를 <bind_host>:<port> 에서 serve_forever. (proxyserver.serve 가 호출)"""
+    httpd = _make_server(machine_id, port, spool_path, policy_path, cert_pem, cert_key, logger, bind_host)
     if logger:
-        logger(f"[periscribe] API 프록시 리슨 https://127.0.0.1:{port} (spool={spool_path})")
+        logger(f"[periscribe] API 프록시 리슨 https://{bind_host}:{port} (spool={spool_path})")
     httpd.serve_forever()

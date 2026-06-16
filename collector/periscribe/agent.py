@@ -125,6 +125,33 @@ def _policies_dir() -> Path:
     return _data_dir() / "policies"
 
 
+def _proxy_run_args() -> tuple[list[str], list[str]]:
+    """컨테이너 Claude 를 호스트 프록시(host.docker.internal)로 라우팅하는 docker run 인자 + 경고.
+    반환 (docker_args, warnings). docker_args 가 비면 적용 불가(ca 없음). stdlib 만 사용.
+    전제: 호스트 프록시 서버(periscribe-proxy)가 api_proxy_bind=0.0.0.0 으로 실행 중."""
+    warns: list[str] = []
+    port = 8077
+    try:
+        data = json.loads(_installed_config_path().read_text(encoding="utf-8-sig"))
+        port = int(data.get("api_proxy_port") or 8077)
+        if str(data.get("api_proxy_bind") or "127.0.0.1") not in ("0.0.0.0", "::"):
+            warns.append('프록시 서버 api_proxy_bind 가 0.0.0.0 이 아니면 컨테이너에서 닿지 않습니다 '
+                         '(config.json 에 "api_proxy_bind": "0.0.0.0" 설정 후 프록시 서버 재시작).')
+    except Exception:
+        warns.append("설치 컬렉터 config 를 못 읽어 기본 포트 8077 사용.")
+    ca = _data_dir() / "ca.pem"
+    if not ca.is_file():
+        return [], ["프록시 CA(ca.pem)가 없습니다 — periscribe-proxy(프록시 서버)를 먼저 한 번 실행하세요."]
+    ca_target = "/etc/periscribe-ca.pem"
+    args = [
+        "--add-host", "host.docker.internal:host-gateway",
+        "--mount", f"type=bind,source={ca},target={ca_target},readonly",
+        "-e", f"ANTHROPIC_BASE_URL=https://host.docker.internal:{port}",
+        "-e", f"NODE_EXTRA_CA_CERTS={ca_target}",
+    ]
+    return args, warns
+
+
 # 머신 전체 기본 정책 파일명. 박스 이름은 _sanitize_name 이 선두 '_'를 떼므로 이 이름과 충돌하지 않는다.
 GLOBAL_POLICY_NAME = "_default.json"
 
@@ -358,6 +385,9 @@ def cmd_agent(argv: list[str]) -> int:
     p.add_argument("--api-key", default="",
                    help="ANTHROPIC_API_KEY 주입(생략 시 컨테이너 안에서 /login 으로 인증)")
     p.add_argument("--rebuild", action="store_true", help="에이전트 이미지를 강제로 다시 빌드")
+    p.add_argument("--proxy", action="store_true",
+                   help="컨테이너 Claude 를 호스트 프록시(periscribe-proxy)로 라우팅 — 로깅+통제 적용. "
+                        "프록시 서버가 api_proxy_bind=0.0.0.0 으로 실행 중이어야 함")
     a = p.parse_args(argv)
 
     runtime = _find_runtime()
@@ -416,8 +446,19 @@ def cmd_agent(argv: list[str]) -> int:
             print(f"[agent] 이미지 빌드 실패(코드 {rc}).", file=sys.stderr)
             return rc
 
+    # 프록시 경유(--proxy): 컨테이너 Claude 트래픽을 호스트 프록시로 라우팅(로깅+통제).
+    proxy_args: list[str] = []
+    if a.proxy:
+        proxy_args, proxy_warns = _proxy_run_args()
+        for w in proxy_warns:
+            print(f"[agent] ⚠ {w}", file=sys.stderr)
+        if not proxy_args:
+            print("[agent] --proxy 를 적용할 수 없어 중단합니다.", file=sys.stderr)
+            return 3
+        print("[agent] 프록시 경유 활성화 — 컨테이너 Claude 트래픽이 호스트 프록시로 라우팅됩니다(웹 🛰 API).")
+
     suffix = ["bash"] if a.shell else ["claude"]
-    extra: list[str] = (["-e", f"ANTHROPIC_API_KEY={a.api_key}"] if a.api_key else []) + policy_args
+    extra: list[str] = (["-e", f"ANTHROPIC_API_KEY={a.api_key}"] if a.api_key else []) + proxy_args + policy_args
     tty = sys.stdin.isatty() and sys.stdout.isatty()
 
     print(f"[agent] 박스 '{name}' 시작 — workspace = {workspace}")

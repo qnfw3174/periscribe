@@ -71,6 +71,8 @@ def _gen_leaf(server_pem: Path, server_key: Path,
         x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
         x509.IPAddress(ipaddress.ip_address("::1")),
         x509.DNSName("localhost"),
+        # 컨테이너(agent --proxy)가 host.docker.internal:<port> 로 호스트 프록시에 접속할 때 검증 통과용.
+        x509.DNSName("host.docker.internal"),
     ])
     cert = (
         x509.CertificateBuilder()
@@ -91,14 +93,18 @@ def _gen_leaf(server_pem: Path, server_key: Path,
 def _leaf_valid(server_pem: Path) -> bool:
     try:
         cert = x509.load_pem_x509_certificate(server_pem.read_bytes())
-        return cert.not_valid_after_utc > _now() + 30 * _DAY
+        if cert.not_valid_after_utc <= _now() + 30 * _DAY:
+            return False
+        # host.docker.internal SAN 이 없으면(구버전 인증서) 재발급 대상 — 컨테이너 프록시 접속 위해 필요.
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        return "host.docker.internal" in san.get_values_for_type(x509.DNSName)
     except Exception:
         return False
 
 
 def ensure_certs(data_dir: Path) -> dict[str, Any]:
-    """CA + 127.0.0.1 리프를 보장(누락/만료시 재생성)하고 경로 dict 반환.
-    반환: {ca_pem, server_pem, server_key} (절대경로 str)."""
+    """CA + 리프(127.0.0.1/localhost/host.docker.internal)를 보장하고 경로 dict 반환.
+    CA 가 있으면 재사용(NODE_EXTRA_CA_CERTS 신뢰 유지)하고 리프만 필요 시 재발급. 반환: {ca_pem, server_pem, server_key}."""
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     ca_pem = data_dir / "ca.pem"
@@ -106,10 +112,14 @@ def ensure_certs(data_dir: Path) -> dict[str, Any]:
     server_pem = data_dir / "server.pem"
     server_key = data_dir / "server.key"
 
-    need = not (ca_pem.is_file() and ca_key.is_file() and server_pem.is_file()
-                and server_key.is_file() and _leaf_valid(server_pem))
-    if need:
+    if not (ca_pem.is_file() and ca_key.is_file()):
+        # CA 없음 → CA + 리프 새로 생성.
         ca_cert, ca_priv = _gen_ca(ca_pem, ca_key)
+        _gen_leaf(server_pem, server_key, ca_cert, ca_priv)
+    elif not (server_pem.is_file() and server_key.is_file() and _leaf_valid(server_pem)):
+        # CA 는 유지(신뢰 보존), 리프만 재발급(만료/SAN 누락).
+        ca_cert = x509.load_pem_x509_certificate(ca_pem.read_bytes())
+        ca_priv = serialization.load_pem_private_key(ca_key.read_bytes(), password=None)
         _gen_leaf(server_pem, server_key, ca_cert, ca_priv)
     return {
         "ca_pem": str(ca_pem.resolve()),
