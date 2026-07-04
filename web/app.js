@@ -898,6 +898,8 @@
   }
   function deviceLabel(d) { return d.name || d.machine_id || (d.id || "").slice(0, 8); }
 
+  const wasOnline = new Map();              // device.id -> 직전 렌더의 온라인 여부
+  let confirmOfflineTimer = null;
   function renderHealth() {
     if (!healthChips) return;
     const list = Array.from(deviceMap.values()).filter((d) => !d.revoked)
@@ -906,14 +908,26 @@
       healthChips.innerHTML = '<span class="health-empty">등록된 머신 없음 — ⚙ 머신 관리에서 추가</span>';
       return;
     }
+    // 온라인→오프라인 전환이 보이면 Realtime 이 조용히 끊긴 것일 수 있으니, 오프라인으로
+    // 확정하기 전에 DB 에서 last_seen 을 한 번 재확인한다(깜빡이는 false offline 방지).
+    let flippedOffline = false;
     healthChips.innerHTML = list.map((d) => {
       const on = isOnline(d);
+      if (wasOnline.get(d.id) === true && !on) flippedOffline = true;
+      wasOnline.set(d.id, on);
       const warn = d.last_error
         ? `<span class="dev-warn" title="${esc(d.last_error)}">⚠</span>` : "";
       return `<span class="machine-chip ${on ? "online" : "stale"}" title="${esc(d.platform || "")} · v${esc(d.collector_version || "?")}">` +
         `<span class="mdot"></span><span class="mname">${esc(deviceLabel(d))}</span>${warn}` +
         `<span class="mseen">${on ? "온라인" : (d.last_seen ? relTime(d.last_seen) : "대기")}</span></span>`;
     }).join("");
+    if (flippedOffline && !confirmOfflineTimer) {
+      // 즉시 한 번 DB 재확인(짧게 디바운스해 5초 렌더 루프가 매번 재조회하지 않도록).
+      confirmOfflineTimer = setTimeout(() => {
+        confirmOfflineTimer = null;
+        if (!document.hidden) loadDevices();
+      }, 800);
+    }
   }
   async function loadDevices() {
     const { data, error } = await client.from("devices").select("*");
@@ -951,10 +965,18 @@
         }
       });
   }
-  setInterval(renderHealth, 5000);          // 상대시간/온라인 상태 주기 갱신
+  setInterval(renderHealth, 5000);          // 상대시간/온라인 상태 주기 갱신(캐시 기준)
+  // 안전망: Realtime UPDATE(하트비트)가 조용히 멈춰도(WebSocket은 살아있어 CHANNEL_ERROR
+  // 조차 안 뜨는 경우) 오프라인으로 굳지 않도록, 탭이 보이는 동안 heartbeat 주기(30s)에 맞춰
+  // devices 를 DB 에서 재동기화한다. 이게 없으면 머신 관리를 열어야만(loadDevices) 복구됐다.
+  setInterval(() => { if (!document.hidden) loadDevices(); }, 30000);
   // 절전/백그라운드/네트워크 복귀 시 누락분 따라잡기
   document.addEventListener("visibilitychange", () => { if (!document.hidden) catchUp(); });
   window.addEventListener("online", () => catchUp());
+  // 안전망: events Realtime 이 조용히 멈춰도(WebSocket 살아있어 재구독조차 안 걸리는 경우)
+  // 새 세션/이벤트가 화면에 늦게 뜨지 않도록, 탭이 보이는 동안 주기적으로 catchUp 한다.
+  // catchUp 은 lastRecv 이후만 서버필터로 당겨오고 event_id 로 멱등 머지 → healthy 일 땐 거의 0건.
+  setInterval(() => { if (!document.hidden) catchUp(); }, 12000);
 
   // ---- 디바이스 관리(토큰 발급/revoke) ----
   function genToken() {
