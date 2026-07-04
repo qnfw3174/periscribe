@@ -498,6 +498,13 @@
       if ([...F.container.options].some((o) => o.value === cur2)) F.container.value = cur2;
     }
   }
+  // 파생 UI(세션/머신/컨테이너 드롭다운·건수 라벨) 갱신을 디바운스(2s)로 묶는다.
+  // 이벤트/디바이스 변경 지점에서 호출 → Realtime 이 정상일 때도 F5 없이 목록·건수가 최신화된다.
+  let filterRefreshTimer = null;
+  function scheduleFilterRefresh() {
+    if (filterRefreshTimer) return;
+    filterRefreshTimer = setTimeout(() => { filterRefreshTimer = null; loadFilterOptions(); }, 2000);
+  }
   function syncSelect(sel, values, sliceLabel) {
     const cur = sel.value;
     const wanted = Array.from(values).sort();
@@ -690,15 +697,13 @@
       const { data, error } = await q;
       if (!error && Array.isArray(data)) {
         await decryptRows(data);
-        let added = 0, newSession = false;
+        let added = 0;
         for (const ev of data) {
           if (!store.has(ev.event_id)) added++;
           upsert(ev);
-          // catchUp 중 처음 보는 세션이면 드롭다운(세션 목록)도 갱신해야 한다(새로고침 없이 보이게).
-          if (ev.session_id && !knownSessions.has(ev.session_id)) { knownSessions.add(ev.session_id); newSession = true; }
+          if (ev.session_id) knownSessions.add(ev.session_id);
         }
-        if (added) { refreshFilterOptions(); render(true); }
-        if (newSession) loadFilterOptions();
+        if (added) { refreshFilterOptions(); render(true); scheduleFilterRefresh(); }
       }
       await loadDevices();  // 디바이스 상태도 재동기화
     } catch (_) { /* 일시 오류는 다음 트리거에서 재시도 */ }
@@ -714,10 +719,8 @@
         upsert(payload.new);
         if (dbTotal != null) dbTotal += 1;
         // 새 세션이 생기면 세션 드롭다운을 DB 전체 기준으로 갱신
-        if (payload.new && payload.new.session_id && !knownSessions.has(payload.new.session_id)) {
-          knownSessions.add(payload.new.session_id);
-          loadFilterOptions();
-        }
+        if (payload.new && payload.new.session_id) knownSessions.add(payload.new.session_id);
+        scheduleFilterRefresh();   // 새 세션 + 기존 세션 건수/시간 라벨 최신화(디바운스)
         refreshFilterOptions();
         render(true);  // 새 이벤트는 맨 아래 → 따라가기
       })
@@ -929,12 +932,16 @@
       }, 800);
     }
   }
+  const machineSig = () => [...deviceMap.values()].map((d) => d.machine_id || "").sort().join(",");
   async function loadDevices() {
     const { data, error } = await client.from("devices").select("*");
     if (!error) {
+      const prevSig = machineSig();
       deviceMap.clear();
       for (const d of data || []) deviceMap.set(d.id, d);
       renderHealth(); renderDeviceList();
+      // 머신 집합이 바뀌었으면(신규/제거) 상단 머신 필터 드롭다운도 재구성.
+      if (machineSig() !== prevSig) scheduleFilterRefresh();
     }
   }
   let devChannel = null, devResubTimer = null;
@@ -945,6 +952,8 @@
         if (p.new && p.new.id) {
           const prev = deviceMap.get(p.new.id);
           deviceMap.set(p.new.id, p.new);
+          // 새 디바이스거나 machine_id 가 바뀌면 머신 필터 드롭다운도 갱신(heartbeat 갱신엔 X).
+          if (!prev || prev.machine_id !== p.new.machine_id) scheduleFilterRefresh();
           // 봉인 DEK(세대)가 새로 도착/변경되면 그 디바이스 캐시 무효화 + 잠긴 이벤트 재복호화.
           const changed = !prev
             || JSON.stringify(prev.dek_keys || {}) !== JSON.stringify(p.new.dek_keys || {})
