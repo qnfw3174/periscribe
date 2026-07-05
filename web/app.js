@@ -837,14 +837,28 @@
     if (cnt) cnt.textContent = n ? `${n}개 선택됨` : "";
     if (btn) btn.disabled = n === 0;
   }
+  let sessLastIdx = -1;   // 쉬프트+클릭 범위선택 기준(앵커) 인덱스
   function renderSessionsList(rows) {
     const el = document.getElementById("sessions-list");
     if (!el) return;
+    sessLastIdx = -1;
     if (!rows.length) { el.innerHTML = '<div class="health-empty">세션이 없습니다.</div>'; return; }
     el.innerHTML = rows.map((r) =>
       `<label class="session-row"><input type="checkbox" class="sess-chk" value="${esc(r.session_id)}" />` +
       `<span class="sess-label">${esc(sessionRowLabel(r))}</span></label>`).join("");
-    el.querySelectorAll(".sess-chk").forEach((c) => c.addEventListener("change", updateSessionSelCount));
+    const chks = [...el.querySelectorAll(".sess-chk")];
+    chks.forEach((c, i) => {
+      c.addEventListener("change", updateSessionSelCount);
+      // 쉬프트+클릭: 직전 클릭 항목부터 현재 항목까지 현재 체크 상태로 일괄 적용
+      c.addEventListener("click", (e) => {
+        if (e.shiftKey && sessLastIdx !== -1 && sessLastIdx !== i) {
+          const [lo, hi] = sessLastIdx < i ? [sessLastIdx, i] : [i, sessLastIdx];
+          for (let k = lo; k <= hi; k++) chks[k].checked = c.checked;
+          updateSessionSelCount();
+        }
+        sessLastIdx = i;
+      });
+    });
     const all = document.getElementById("sessions-all"); if (all) all.checked = false;
     updateSessionSelCount();
   }
