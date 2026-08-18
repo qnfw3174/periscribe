@@ -4,9 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "periscribe-collector"
-version = "0.1.0"
+version = "0.2.1"
 description = "Read-only Claude Code transcript collector that ingests into Supabase"
-readme = "../README.md"
+# readme 는 지정하지 않는다: setuptools 가 프로젝트 루트(collector/) 밖의 파일을 거부하므로
+# "../README.md" 를 쓰면 `pip install -e collector` 자체가 실패한다. README 는 저장소 루트 참조.
 requires-python = ">=3.8"
 license = { text = "MIT" }
 # E2EE(payload 암호화)에 AES-GCM·RSA-OAEP가 필요해 cryptography 1개만 추가.
@@ -15,8 +16,10 @@ dependencies = ["cryptography>=41"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
-# GUI 설치 창(더블클릭)에서만 사용. exe 빌드 시 번들된다. 수집 런타임엔 불필요.
-gui = ["customtkinter>=5"]
+# GUI 설치 창·트레이 패널에서만 사용. exe 빌드 시 번들된다. 수집 런타임엔 불필요
+# (트레이 import 는 try/except 로 감싸져 있어 없으면 트레이만 비활성화된다).
+# packaging/build.ps1 이 설치하는 목록과 일치시킨다.
+gui = ["customtkinter>=5", "pystray>=0.19", "pillow>=9"]
 
 [project.scripts]
 periscribe = "periscribe.__main__:main"

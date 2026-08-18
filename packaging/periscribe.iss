@@ -4,10 +4,11 @@
 ; 데이터(config/certs/logs)는 %LOCALAPPDATA%\Periscribe 에 별도(재설치에도 보존, 제거 시 삭제).
 
 #define MyAppName "Periscribe"
-#define MyAppVersion "0.1.1"
+#define MyAppVersion "0.2.1"
 #define MyAppPublisher "Periscribe"
-#define DistDir "C:\_pj\_periscribe\packaging\dist\periscribe"
-#define PkgDir "C:\_pj\_periscribe\packaging"
+; 경로는 이 .iss 파일 위치 기준(SourcePath)으로 잡는다 — 빌드하는 사람의 체크아웃 위치에 무관해야 한다.
+#define PkgDir RemoveBackslash(SourcePath)
+#define DistDir PkgDir + "\dist\periscribe"
 
 [Setup]
 AppId={{6F3C9A2E-1B4D-4E7A-9C21-A1B2C3D4E5F6}}

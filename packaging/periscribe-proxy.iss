@@ -4,8 +4,10 @@
 ; 데이터(인증서 ca.pem 등)는 %LOCALAPPDATA%\Periscribe 공유 — 제거해도 이 데이터는 안 지운다(컬렉터와 공유).
 
 #define MyAppName "Periscribe Proxy"
-#define MyAppVersion "0.1.1"
-#define DistDir "C:\_pj\_periscribe\packaging\dist\periscribe-proxy"
+#define MyAppVersion "0.2.1"
+; 경로는 이 .iss 파일 위치 기준(SourcePath)으로 잡는다 — 빌드하는 사람의 체크아웃 위치에 무관해야 한다.
+#define PkgDir RemoveBackslash(SourcePath)
+#define DistDir PkgDir + "\dist\periscribe-proxy"
 
 [Setup]
 AppId={{2A8F1C5B-7E3D-4A96-B0C4-D5E60FE71A2B}}
@@ -16,7 +18,7 @@ DefaultDirName={localappdata}\Programs\Periscribe Proxy
 DisableProgramGroupPage=yes
 DisableDirPage=yes
 PrivilegesRequired=lowest
-OutputDir=C:\_pj\_periscribe\packaging\dist
+OutputDir={#PkgDir}\dist
 OutputBaseFilename=periscribe-proxy-setup
 Compression=lzma2
 SolidCompression=yes

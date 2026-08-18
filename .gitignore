@@ -2,9 +2,24 @@
 
 # Local secrets / config (never commit write keys)
 collector/config.json
+/config.json
 web/config.js
 .env
 .env.*
+
+# 인증서·개인키. 실제 생성 위치는 %LOCALAPPDATA%\Periscribe 라 저장소 밖이지만,
+# 실수로 복사해 오는 경우를 막는 방어선(추적 중인 .pem/.key 파일은 없다).
+*.pem
+*.key
+
+# 프록시/OS감사 spool. watch_dir 아래에 생기므로 보통 저장소 밖이다.
+_apilog/
+_osexec/
+
+# 배포자별 엔드포인트 설정(dist.example.json 을 복사해 사용)
+dist.json
+collector/dist.json
+packaging/dist.json
 
 # Offset checkpoints
 *.offset.json

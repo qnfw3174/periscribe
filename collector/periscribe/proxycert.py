@@ -56,6 +56,9 @@ def _gen_ca(ca_pem: Path, ca_key: Path) -> tuple[x509.Certificate, rsa.RSAPrivat
             digital_signature=False, content_commitment=False, key_encipherment=False,
             data_encipherment=False, key_agreement=False, key_cert_sign=True,
             crl_sign=True, encipher_only=False, decipher_only=False), critical=True)
+        # RFC 5280 §4.2.1.2 는 CA 인증서에 SKI 를 요구한다. 엄격 검증(X509_V_FLAG_X509_STRICT,
+        # Python 3.14 의 create_default_context 기본값)에서 없으면 "Missing Subject Key Identifier".
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
         .sign(key, hashes.SHA256())
     )
     _write_cert(ca_pem, cert)
@@ -84,6 +87,13 @@ def _gen_leaf(server_pem: Path, server_key: Path,
         .add_extension(san, critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+        # RFC 5280 §4.2.1.1 은 자체서명이 아닌 인증서에 AKI 를 요구한다. 엄격 검증에서
+        # 없으면 "Missing Authority Key Identifier". 발급자 공개키에서 유도하므로
+        # 위 CA 의 SKI 와 같은 값이 되어 대조에 통과한다.
+        # (주의: SKI 가 아예 없는 구버전 CA 는 이것만으로 살아나지 않는다 — CA 자체가
+        #  "Missing Subject Key Identifier" 로 거부되므로 ca.pem/ca.key 를 지워 재생성해야 한다.)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
     _write_cert(server_pem, cert)
@@ -97,7 +107,11 @@ def _leaf_valid(server_pem: Path) -> bool:
             return False
         # host.docker.internal SAN 이 없으면(구버전 인증서) 재발급 대상 — 컨테이너 프록시 접속 위해 필요.
         san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-        return "host.docker.internal" in san.get_values_for_type(x509.DNSName)
+        if "host.docker.internal" not in san.get_values_for_type(x509.DNSName):
+            return False
+        # AKI 가 없으면(구버전 인증서) 재발급 대상 — 엄격 검증 클라이언트가 거부한다.
+        cert.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier)
+        return True
     except Exception:
         return False
 
