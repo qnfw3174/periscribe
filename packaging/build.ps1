@@ -50,6 +50,30 @@ foreach ($n in @("periscribe", "periscribe-proxy", "periscribe-agent")) {
 }
 Write-Host "onedir x3 done" -ForegroundColor Green
 
+# ---- 1b) 배포 엔드포인트 주입 ----
+# ingest URL 은 소스에 하드코딩하지 않는다(포크한 사람이 자기 Supabase 를 쓰게).
+# 우선순위: 환경변수 > packaging\dist.json > collector\dist.json.
+$ingestUrl = $env:PERISCRIBE_DEFAULT_INGEST_URL
+if (-not $ingestUrl) {
+  foreach ($c in @((Join-Path $here "dist.json"), (Join-Path $collector "dist.json"))) {
+    if (Test-Path $c) {
+      try { $ingestUrl = (Get-Content $c -Raw | ConvertFrom-Json).ingest_url } catch { }
+      if ($ingestUrl) { break }
+    }
+  }
+}
+if ($ingestUrl) {
+  $payload = @{ ingest_url = $ingestUrl } | ConvertTo-Json
+  foreach ($n in @("periscribe", "periscribe-proxy", "periscribe-agent")) {
+    Set-Content -Path (Join-Path $dist "$n\dist.json") -Value $payload -Encoding UTF8
+  }
+  Write-Host "ingest endpoint injected: $ingestUrl" -ForegroundColor Green
+} else {
+  Write-Warning ("ingest URL 이 없습니다 - 설치 시 사용자에게 오류가 표시됩니다.`n" +
+                 "  collector\dist.example.json 을 dist.json 으로 복사해 채우거나,`n" +
+                 "  `$env:PERISCRIBE_DEFAULT_INGEST_URL 를 설정한 뒤 다시 빌드하세요.")
+}
+
 # ---- 2) 역할별 설치 프로그램 빌드 ----
 $iscc = @(
   "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",

@@ -36,11 +36,7 @@ TASK_NAME = "PeriscribeCollector"
 GUARDIAN_TASK_NAME = "PeriscribeGuardian"
 
 # 배포본에 내장되는 기본 ingest 엔드포인트. 사용자는 토큰만 넣으면 된다(URL 입력 불필요).
-# 빌드/실행 시 PERISCRIBE_DEFAULT_INGEST_URL 로 덮어쓸 수 있다.
-DEFAULT_INGEST_URL = os.environ.get(
-    "PERISCRIBE_DEFAULT_INGEST_URL",
-    "https://wgzsjdmohbawfcxiicqc.supabase.co/functions/v1/ingest",
-)
+# 빌드/실행 시의 배포 엔드포인트는 소스에 하드코딩하지 않는다 — 해석 규칙은 _default_ingest_url() 참고.
 
 SYSMON_DOWNLOAD_URL = "https://live.sysinternals.com/Sysmon64.exe"
 
@@ -111,6 +107,42 @@ def _default_config_path() -> str:
     """-c 미지정 시 config 자동 해석: 설치본(frozen)은 LOCALAPPDATA 설치 config, 소스 실행은 ./config.json.
     (자동시작 레지스트리는 호환을 위해 계속 `run -c "<path>"` 명시 포맷으로 등록한다 — _reconcile_autostart)"""
     return str(_installed_config_path()) if getattr(sys, "frozen", False) else "config.json"
+
+
+def _dist_config() -> dict:
+    """배포 설정(dist.json) — 배포자마다 다른 값을 담는다. 저장소에 커밋하지 않는다(.gitignore).
+    탐색 순서: exe 옆(설치본) → %LOCALAPPDATA%\\Periscribe → collector/dist.json(소스 실행).
+    없거나 깨졌으면 빈 dict — 호출자가 폴백을 결정한다."""
+    cands = []
+    if getattr(sys, "frozen", False):
+        cands.append(Path(sys.executable).with_name("dist.json"))
+    cands.append(_data_dir() / "dist.json")
+    cands.append(Path(__file__).resolve().parent.parent / "dist.json")
+    for p in cands:
+        try:
+            if p.is_file():
+                d = json.loads(p.read_text(encoding="utf-8-sig"))
+                if isinstance(d, dict):
+                    return d
+        except Exception:
+            continue
+    return {}
+
+
+def _default_ingest_url() -> str:
+    """설치 시 쓸 ingest 엔드포인트. **소스에 하드코딩하지 않는다** —
+    저장소를 포크한 사람이 자기 Supabase 프로젝트를 쓰게 하기 위함.
+    우선순위: 환경변수 PERISCRIBE_DEFAULT_INGEST_URL > dist.json의 ingest_url > 빈 문자열.
+    비어 있으면 install() 이 명확한 메시지로 설치를 중단한다."""
+    env = (os.environ.get("PERISCRIBE_DEFAULT_INGEST_URL") or "").strip()
+    if env:
+        return env
+    v = _dist_config().get("ingest_url")
+    return v.strip() if isinstance(v, str) else ""
+
+
+# 하위 호환용 상수(import 시점 스냅샷). 실제 설치는 _default_ingest_url() 을 호출 시점에 다시 읽는다.
+DEFAULT_INGEST_URL = _default_ingest_url()
 
 
 def _is_installed() -> bool:
@@ -292,11 +324,22 @@ def cmd_run(argv: list[str]) -> int:
 
 
 # ---------------- install ----------------
-def install(token: str, name: str = "", url: str = DEFAULT_INGEST_URL, *,
+def install(token: str, name: str = "", url: str = "", *,
             data_dir: str | Path | None = None, task_name: str = TASK_NAME,
             exe: str = "", dry_run: bool = False) -> int:
     """이 PC에 Collector 설치(부팅 자동실행). CLI 표면 없음 — setup(콘솔)·GUI 설치 창이 직접 호출한다.
-    token: 웹에서 발급받은 디바이스 토큰 / name: machine_id(비우면 hostname) / url: ingest 엔드포인트."""
+    token: 웹에서 발급받은 디바이스 토큰 / name: machine_id(비우면 hostname)
+    url: ingest 엔드포인트. 비우면 _default_ingest_url()(환경변수 또는 dist.json)에서 해석.
+    어느 경로로도 URL 을 못 구하면 ValueError — 호출자(GUI/콘솔)가 메시지를 그대로 보여준다."""
+    url = (url or _default_ingest_url()).strip()
+    if not url:
+        raise ValueError(
+            "ingest 엔드포인트가 설정되지 않았습니다.\n"
+            "배포자가 아래 중 하나를 지정해야 합니다:\n"
+            "  • 환경변수 PERISCRIBE_DEFAULT_INGEST_URL\n"
+            "  • dist.json 의 ingest_url (collector/dist.example.json 참고)\n"
+            "예: https://<project>.supabase.co/functions/v1/ingest"
+        )
     data = Path(data_dir) if data_dir else _data_dir()
     config_path = data / "config.json"
     cfg = {
@@ -1101,7 +1144,12 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "uninstall":
         return cmd_uninstall(argv[1:])
     if argv and argv[0] == "setup":
-        return cmd_setup(argv[1:])
+        try:
+            return cmd_setup(argv[1:])
+        except ValueError as e:      # ingest URL 미설정 등 — 트레이스백 대신 사람이 읽을 메시지로.
+            print(f"\n[periscribe] 설치를 진행할 수 없습니다:\n{e}", file=sys.stderr)
+            _pause()
+            return 4
     if argv and argv[0] == "run":
         return cmd_run(argv[1:])
     if argv and argv[0] == "audit-setup":

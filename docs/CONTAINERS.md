@@ -43,9 +43,27 @@ periscribe-agent <작업폴더> --name <box-id>
 - 첫 실행이면 컨테이너 안에서 `/login` 한 번 → 호스트 `<container_root>/<name>\.credentials.json`에
   남아 **재실행 시 재로그인 불필요**(`~/.claude` 전체를 호스트에 bind하기 때문).
 - `--shell` 로 claude 대신 bash 진입, `--api-key` 로 키 주입(로그인 대신).
+- `--rebuild` 로 이미지 강제 재빌드(`--no-cache`).
+- 런타임은 `docker` 우선, PATH에 없으면 `podman` 으로 자동 폴백한다.
 - 마운트/격리/수집은 사용 A와 동일(워크스페이스만, `--cap-drop=ALL`, 경로 첫 세그먼트=container_id).
 - 빌드: `packaging/build.ps1` → `periscribe-agent.exe`(컬렉터 `periscribe.exe`와 별도 console exe).
   개념·라이선스·런타임 대안은 [DOCKER-CONCEPTS.md](DOCKER-CONCEPTS.md).
+
+### 컨테이너 트래픽도 프록시로 보기 (`--proxy`)
+컨테이너 안 Claude 의 API 트래픽을 **호스트 프록시**로 라우팅해 로깅·통제를 같이 적용한다
+(웹에서 🛰 API 탭). 컨테이너엔 프록시를 설치하지 않고 환경변수만 주입한다.
+```
+periscribe-agent <작업폴더> --name <box-id> --proxy
+```
+전제 조건 두 가지:
+1. 호스트에서 `periscribe-proxy.exe` 가 실행 중이고, 한 번은 돌아서 `ca.pem` 이 생성돼 있을 것.
+2. config 에 `"api_proxy_bind": "0.0.0.0"` — 기본값 `127.0.0.1` 이면 컨테이너에서 닿지 않는다.
+   변경 후 프록시 서버 재시작. ⚠ `0.0.0.0` 은 LAN 에 노출되므로 신뢰 네트워크에서만.
+
+동작: 런처가 `--add-host host.docker.internal:host-gateway` 와 함께 `ca.pem` 을 읽기전용으로
+마운트하고 `ANTHROPIC_BASE_URL` / `NODE_EXTRA_CA_CERTS` 를 주입한다. 프록시 리프 인증서의 SAN 에
+`host.docker.internal` 이 포함돼 있어 검증이 통과된다(구버전 인증서는 자동 재발급).
+적용할 수 없으면(ca.pem 없음 등) 경고 후 **실행을 중단**한다 — 통제 없이 조용히 실행되지 않는다.
 
 ### 컨테이너 정책 파일 (에이전트 능력 제어 — 인프라 강제)
 컨테이너 안 에이전트가 무엇을 할 수 있는지를 **호스트의 정책 JSON 파일**로 제어한다. 런처가 이 파일을

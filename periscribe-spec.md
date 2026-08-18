@@ -1,4 +1,12 @@
-# Periscribe — 구현 명세
+# Periscribe — 구현 명세 (초기 코어)
+
+> ⚠ **문서 위치**: 이 문서는 프로젝트 착수 시점의 **transcript 수집 코어** 핸드오프 명세이며,
+> 현재 시스템의 일부만 설명합니다. 이후 추가된 **API 프록시·OS 실행 감사·컨테이너 샌드박스·E2EE**는
+> 다루지 않습니다. 현행 전체 아키텍처는 **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)** 를 보세요.
+>
+> 설계 의도(왜 hook이 아니라 transcript인가, 왜 store-and-forward인가)의 근거로서 유지합니다.
+> §5 스키마는 실제 구현에서 확장되었습니다 — 실제 계약은 `supabase/schema.sql` 입니다.
+> 이 명세 이후 달라진 점은 문서 끝의 **부록**에 정리했습니다.
 
 > **Periscribe** = *peri-*(밖에서 둘러본다) + *scribe*(기록자). AI 에이전트를 **외부에서 관찰하며(개입하지 않고) 기록**하는 도구.
 >
@@ -237,3 +245,21 @@ transcript엔 파일 내용·명령 출력·때로 자격증명이 들어온다.
 ---
 
 *문서 버전 2 (Periscribe / Supabase A안). 저장소를 Supabase로 확정하여 중앙 서버 없이 로컬 1대 → 멀티 PC 확장이 Collector 설치만으로 가능하도록 설계됨. 이전 SQLite 기반 초안(agent-activity-logger-spec)을 대체함.*
+
+---
+
+## 부록: 이 명세 이후 실제 구현에서 달라진 점
+
+상세는 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md). 여기서는 이 문서를 읽는 사람이
+오해하지 않도록 차이만 요약합니다.
+
+| 이 문서 | 실제 구현 |
+|---|---|
+| §3.1 컬렉터가 Supabase에 직접 insert | Edge Function(ingest)이 게이트웨이. 각 PC는 **디바이스 토큰만** 보유하고 service_role 키를 갖지 않음 |
+| §5 events 스키마 | `owner_id`/`device_id`/`container_id`/`enc_version` 추가. `devices`·`owner_keys`·`session_catalog`·`backfill_requests`·`delete_requests` 테이블 신설 |
+| §5.3 웹은 anon read-only RLS | 유지 + **owner 스코핑**(`owner_id = auth.uid()`) 멀티테넌트화 |
+| §7 시작 시점 EOF | 유지. 단 백필은 설정값이 아니라 웹의 **백필 요청 큐**로 동작 |
+| §8.2 "필요 시 레닥션할 자리 마련" | 수집 단계 `redact` + 프록시 `redact_patterns` + **payload 전체 E2EE** 구현 |
+| §1.1 비목표: 관찰만, enforcement 안 함 | **부분 변경.** API 프록시·컨테이너 정책으로 선택적 통제 계층 추가. 기본값은 통제 없음이고 정책 오류 시 fail-open |
+| 수집 소스 = transcript 1개 | **3개**(`claude-code` / `api` / `os-exec`). 모두 동일 파이프라인으로 정규화 |
+| §10 표준 라이브러리만 | E2EE·인증서용 `cryptography` 1개 추가. GUI는 optional `customtkinter` |
