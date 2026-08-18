@@ -1,4 +1,4 @@
-# Periscribe 제거 정리 — Inno Setup 제거기가 파일 삭제 직전에 호출(usUninstall).
+﻿# Periscribe 제거 정리 — Inno Setup 제거기가 파일 삭제 직전에 호출(usUninstall).
 # revoke 신호(서버에 제거 통지 → 자동 revoke·제거됨 표시) + 자동시작 해제 + 실행 중 프로세스 종료.
 # (데이터 폴더 %LOCALAPPDATA%\Periscribe 삭제는 .iss 의 [UninstallDelete] 가 담당.)
 

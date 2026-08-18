@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   [deprecated] 소스(Python)에서 Collector를 설치한다.
   비대화형 `install` CLI 는 제거됐다 — 설치는 periscribe.exe 더블클릭(GUI) 또는

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   업계 표준 패키징: 역할별 onedir 번들 + 역할별 Inno Setup 설치 프로그램(3개 분리).
 .NOTES

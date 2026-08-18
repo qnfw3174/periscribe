@@ -7,13 +7,17 @@
 
 - **테스트: 71개 중 71개 통과** (검증 시작 시점 기준으로는 71개 중 65개 통과 + 6개 실패였고,
   그 이전에는 `pip install` 자체가 실패해 테스트를 아예 돌릴 수 없었다)
-- **수정한 것: 9건** (설치 차단 1, 테스트 실패 유발 버그 1, 빌드 차단 1, 버전 불일치 1,
-  문서-동작 불일치 2, 라이선스 고지 누락 1, 의존성 선언 누락 1, `.gitignore` 보강 1)
-- **미조치 항목: 7건**
+- **수정한 것: 10건** (설치 차단 1, 테스트 실패 유발 버그 1, 빌드 차단 1, 버전 불일치 1,
+  문서-동작 불일치 2, 라이선스 고지 누락 1, 의존성 선언 누락 1, `.gitignore` 보강 1,
+  PowerShell 스크립트 인코딩 1)
+- **미조치 항목: 6건**
+- **빌드 파이프라인: 실제로 돌려 확인함** — `build.ps1` 전 구간 통과, 인스톨러 3개 생성
 
 > **추가 반영 (검증 이후, 저장소 소유자 승인)**: 최초 리포트는 수정 7건 / 미조치 9건이었다.
-> 이후 소유자 판단으로 미조치였던 §2-(8) 의존성 선언과 §2-(9) `.gitignore` 보강을 적용해
-> 위 숫자가 각각 9건 / 7건이 됐다. 두 항목은 §2 로 옮겨 적었다.
+> 이후 소유자 판단으로 ① 미조치였던 의존성 선언(§2-(8))과 `.gitignore` 보강(§2-(9))을 적용하고,
+> ② **Inno Setup 을 설치해 빌드를 실제로 돌렸다.** 그 과정에서 PowerShell 스크립트
+> 인코딩 결함(§2-(10))을 새로 발견해 고쳤고, 미검증으로 남아 있던 두 항목
+> (`.iss` 컴파일 / `dist.json` 설치본 포함)이 **실증으로 해소**됐다.
 
 가장 중요한 결과 두 가지:
 
@@ -164,8 +168,8 @@ certificate verify failed: Missing Subject Key Identifier
 `[Files]` 는 3개 모두 `recursesubdirs createallsubdirs` 라 `build.ps1` 이 써넣는
 `dist.json` 이 설치본에 포함된다 — 지시서 §4의 확인 요청 사항이며, **포함된다**가 답이다.
 
-> ⚠ 이 저장소가 없는 환경이라 **ISCC 컴파일로 검증하지 못했다**(Inno Setup 미설치).
-> 문법은 표준 용법이지만 실제 컴파일은 사람이 한 번 돌려보는 것을 권한다.
+> ✅ **컴파일 검증 완료**(추가 반영). Inno Setup 6.7.3 을 설치해 `build.ps1` 을 끝까지 돌렸다.
+> 세 인스톨러 모두 `Successful compile`. 상세는 §4 "빌드 파이프라인 실증" 참고.
 
 ### (4) `packaging/*.iss` ×3 — 버전 불일치 **[B]**
 
@@ -234,6 +238,49 @@ cryptography pystray pillow`) `optional-dependencies` 에는 `customtkinter` 만
 **검증**: `git ls-files | git check-ignore --stdin` 으로 **추적 중인 파일 중 새 규칙에 걸리는
 것이 하나도 없음**을 확인했다(기존 추적 파일을 실수로 무시하게 만들지 않는다).
 
+### (10) `.ps1` 5개 — UTF-8 BOM 누락으로 한글이 깨짐 **[C]** *(추가 반영)*
+
+빌드를 **실제로 돌리다가 발견**했다. 코드 리뷰로는 안 보이는 종류의 결함이다.
+
+`build.ps1` 실행 중 경고문이 이렇게 나왔다.
+
+```
+WARNING: ingest URL ???놁뒿?덈떎 - ?ㅼ튂 ???ъ슜?먯뿉寃??ㅻ쪟媛 ?쒖떆?⑸땲??
+```
+
+콘솔 코드페이지 문제로 보였지만 아니었다. **Windows PowerShell 5.1 은 `.ps1` 파일에 BOM 이
+없으면 UTF-8 이 아니라 ANSI(한국어 Windows 에서 CP949)로 읽는다.** 즉 PowerShell 이 소스
+바이트를 잘못 디코딩한 것이라 출력 리다이렉트로도 해결되지 않는다.
+
+```
+BOM: 3C 23 0A          (EF BB BF 가 아님 = BOM 없음)
+PSVersion: 5.1.26100.8737
+(Get-Content)[72]  ->   "  collector\dist.example.json ??dist.json ?쇰줈 蹂듭궗??梨꾩슦嫄곕굹,`n" +
+UTF-8 강제 디코딩    ->   "  collector\dist.example.json 을 dist.json 으로 복사해 채우거나,`n" +
+```
+
+한글을 포함한 `.ps1` **5개 전부** 같은 상태였다. UTF-8 BOM 을 붙였다.
+
+| 파일 | 한글 | 비고 |
+|---|---|---|
+| `packaging/build.ps1` | 248자 | 빌드 경고·오류 메시지 |
+| `packaging/uninstall-cleanup.ps1` | 115자 | **인스톨러가 제거 시 실행** — 사용자에게 직접 보인다 |
+| `deploy/windows/install-collector.ps1` | 93자 | |
+| `deploy/windows/run-collector.ps1` | 51자 | |
+| `deploy/windows/uninstall-collector.ps1` | 19자 | |
+
+**검증**: BOM 추가 후 ① PowerShell 5.1 이 한글을 정상 디코딩하고 ② 5개 전부 구문 파서 통과
+③ `build.ps1` 을 다시 돌려 경고문이 온전히 출력되는 것까지 확인했다.
+
+```
+WARNING: ingest URL 이 없습니다 - 설치 시 사용자에게 오류가 표시됩니다.
+  collector\dist.example.json 을 dist.json 으로 복사해 채우거나,
+  $env:PERISCRIBE_DEFAULT_INGEST_URL 를 설정한 뒤 다시 빌드하세요.
+```
+
+> BOM 은 PowerShell 7 과 Git 에서 무해하며, `.gitattributes` 는 `.ps1` 에 아무 규칙도 걸지
+> 않으므로 영향이 없다. `.bat` 은 CP949 라 애초에 대상이 아니다(§4 인코딩 점검 참고).
+
 ---
 
 ## 3. 미조치 항목
@@ -267,17 +314,14 @@ ingest 는 유효한 device_token 없이는 insert 할 수 없다. **JWT 계열 
 히스토리 전체에서 0건**으로, anon 키·service_role 키가 커밋된 적은 없음을 확인했다.
 그래도 신경 쓰인다면 Supabase 프로젝트를 새로 파는 편이 히스토리 재작성보다 간단하다.
 
-### (3) 미추적 파일 4개 — 커밋해야 제출본이 성립한다
+### (3) ~~미추적 파일 4개~~ — **해소됨**
 
-```
-?? docs/ARCHITECTURE.md          ← README 가 "여기서 시작"이라고 링크하는 핵심 문서
-?? THIRD-PARTY-LICENSES.md       ← 라이선스 심사 대상 문서
-?? collector/dist.example.json   ← DEPLOY.md 가 복사하라고 안내하는 파일
-?? HANDOFF-VERIFY.md             ← 검증용. 지시서에 따르면 지워도 되는 파일
-```
+최초 검증 시점에 `docs/ARCHITECTURE.md`(README 가 "여기서 시작"이라고 링크하는 핵심 문서),
+`THIRD-PARTY-LICENSES.md`, `collector/dist.example.json`, `HANDOFF-VERIFY.md` 가 미추적이었다.
+이 상태로 제출되면 README·DEPLOY 의 링크와 절차가 깨진다는 점을 지적했다.
 
-**왜 안 고쳤나**: 커밋하지 말라는 지시가 있었다. 다만 **앞의 3개가 빠진 채로 제출되면
-README·DEPLOY의 링크와 절차가 깨진다** — 커밋 시 반드시 포함해야 한다.
+**해소**: 추가 반영 때 4개 모두 커밋했다. 클론한 저장소에서 링크 실재를 재확인했다.
+`HANDOFF-VERIFY.md` 는 지시서상 지워도 되는 파일이지만, 소유자 판단으로 남겼다.
 
 ### (4) `install()` 의 ValueError 메시지가 GUI 라벨에서 잘릴 수 있다
 
@@ -288,11 +332,7 @@ README·DEPLOY의 링크와 절차가 깨진다** — 커밋 시 반드시 포�
 
 **왜 안 고쳤나**: 레이아웃 변경이고, 동작 결함이 아니다.
 
-### (5) `.iss` 수정을 컴파일로 검증하지 못했다
-
-이 PC에 Inno Setup 이 없다. §2-(3) 참고.
-
-### (6) Python 3.8 실런타임 검증을 못 했다
+### (5) Python 3.8 실런타임 검증을 못 했다
 
 `requires-python = ">=3.8"` 선언을 다음과 같이 확인했다.
 
@@ -306,7 +346,7 @@ README·DEPLOY의 링크와 절차가 깨진다** — 커밋 시 반드시 포�
 참고로 최신 `cryptography` 는 3.8 을 더 이상 지원하지 않으므로, 3.8 사용자는
 구버전 `cryptography` 로 떨어진다(`>=41` 이므로 해석은 된다).
 
-### (7) `web/index.html` 에 작성자 GitHub 계정명이 있다
+### (6) `web/index.html` 에 작성자 GitHub 계정명이 있다
 
 `https://github.com/qnfw3174/periscribe-dist/releases/...` 6곳. 배포물 다운로드 링크이므로
 **의도된 공개 정보**로 보인다. 개인정보 스캔 결과로 보고만 한다.
@@ -367,6 +407,49 @@ ingest 엔드포인트가 설정되지 않았습니다.
   • dist.json 의 ingest_url (collector/dist.example.json 참고)
 예: https://<project>.supabase.co/functions/v1/ingest
 ```
+
+### 빌드 파이프라인 실증 *(추가 반영)*
+
+Inno Setup 6.7.3 을 `winget` 으로 설치하고 `packaging/build.ps1` 을 실제로 돌렸다.
+시스템 파이썬 오염을 피하려고 검증용 venv 를 PATH 앞에 두고 실행했다
+(`build.ps1` 20번 줄이 주변 `python` 에 `pip install` 을 하기 때문이다).
+
+| 단계 | 결과 |
+|---|---|
+| `winget install JRSoftware.InnoSetup` | ✅ 6.7.3, `%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe` |
+| ISCC 경로가 `build.ps1` 탐색 목록과 일치하는가 | ✅ 첫 번째 후보에 정확히 설치됨 |
+| PyInstaller onedir ×3 | ✅ `onedir x3 done` |
+| Inno Setup 컴파일 ×3 | ✅ `Successful compile` ×3 |
+
+산출물:
+
+| 인스톨러 | 크기 | onedir |
+|---|---|---|
+| `periscribe-setup.exe` | 18.2 MB | 54.5 MB / 1,209 파일 |
+| `periscribe-proxy-setup.exe` | 17.2 MB | 50.9 MB / 1,071 파일 |
+| `periscribe-agent-setup.exe` | 8.7 MB | 19.9 MB / 58 파일 |
+
+`periscribe-agent` 가 19.9 MB / 58 파일로 확연히 작은 것은 설계대로다 —
+표준 라이브러리만 쓰고 컬렉터 코드를 import 하지 않는다.
+
+**`dist.json` 이 설치본에 실제로 들어가는가** (지시서 §4의 핵심 확인 요청):
+`PERISCRIBE_DEFAULT_INGEST_URL` 을 넣고 다시 빌드해 ISCC 로그에서 확증했다.
+
+```
+Compressing: ...\dist\periscribe\dist.json
+Compressing: ...\dist\periscribe-proxy\dist.json
+Compressing: ...\dist\periscribe-agent\dist.json
+```
+
+주입 블록도 정상 동작한다 — 세 onedir 폴더 모두
+`{"ingest_url": "https://example.invalid/functions/v1/ingest"}` 가 기록됐고,
+URL 없이 돌리면 빌드를 막지 않고 경고만 내는 것도 확인했다(설계대로).
+
+> 빌드 산출물(`packaging/dist/`, `packaging/build/`, `packaging/*.spec`)은
+> `.gitignore` 가 전부 막고 있어 저장소가 오염되지 않는 것도 확인했다.
+>
+> 검증하지 **않은** 것: 생성된 인스톨러를 실제로 **실행**해 설치해 보지는 않았다
+> (이 PC에 Periscribe 를 설치하고 자동시작을 등록하게 되므로). 컴파일과 패키징까지가 범위다.
 
 ### 인코딩 점검 (지시서 §2 — 우선순위 높음)
 
@@ -510,8 +593,16 @@ $ git diff --stat
 > 함께 들어갔으므로, 2번 커밋에는 기존 문서 갱신분도 포함돼 있다. 줄 단위 귀속은 위의
 > "어느 변경이 누구 것인가" 표를 기준으로 본다.
 
+### 3번째 커밋 (빌드 실증)
+
+Inno Setup 설치 후 빌드를 돌리는 과정에서 나온 변경이다.
+
+- `.ps1` 5개에 UTF-8 BOM 추가 (§2-(10))
+- 이 리포트 갱신 — §2-(3)·§4 의 "컴파일 미검증" 표기 해소, 미조치 7건 → 6건
+
 ### 남은 후속 작업 (사람이 판단)
 
-1. `packaging/*.iss` 를 Inno Setup 으로 한 번 컴파일해 §2-(3) 확인 — **이 검증에서 못 한 유일한 것**
-2. §3-(1) 구버전 CA 재생성을 자동화할지 결정
-3. §3-(2) 히스토리의 Supabase 프로젝트 ID — 신경 쓰이면 프로젝트를 새로 파는 편이 간단하다
+1. §3-(1) 구버전 CA 재생성을 자동화할지 결정 — 실사용 영향은 낮을 가능성이 크다
+2. §3-(2) 히스토리의 Supabase 프로젝트 ID — 신경 쓰이면 프로젝트를 새로 파는 편이 간단하다
+3. 제출 직전 실제 배포용 빌드는 `PERISCRIBE_DEFAULT_INGEST_URL` 또는 `collector/dist.json` 에
+   **진짜 엔드포인트**를 넣고 다시 돌려야 한다(이번 검증은 `example.invalid` 로만 확인했다)

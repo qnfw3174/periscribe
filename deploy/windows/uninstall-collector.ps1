@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Collector 작업 스케줄러 등록 제거(소스 설치분). exe 설치분은 `periscribe.exe uninstall`.
 #>
