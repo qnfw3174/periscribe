@@ -4,9 +4,22 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Periscribe</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&display=swap" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <!-- 앰비언트 배경(장식 전용, 클릭 안 통과). 그라디언트+블롭+격자+노이즈 4겹 -->
+  <div class="bg-layers" aria-hidden="true">
+    <div class="bg-blob bg-blob--primary"></div>
+    <div class="bg-blob bg-blob--secondary"></div>
+    <div class="bg-blob bg-blob--tertiary"></div>
+    <div class="bg-grid"></div>
+    <div class="bg-noise"></div>
+  </div>
+
   <!-- 상단 고정 영역: 스크롤해도 topbar+헬스바+필터가 항상 보이게 한 덩어리로 고정 -->
   <div class="topstack">
   <header class="topbar">
@@ -24,37 +37,6 @@
     </div>
   </header>
 
-  <!-- 로그인 게이트: 인증 전엔 이것만 보인다 -->
-  <div id="login-gate" class="login-gate">
-    <form id="login-form" class="login-card" autocomplete="on">
-      <div class="login-title"><span class="logo">⌖</span> Periscribe</div>
-      <div class="login-sub">로그인이 필요합니다</div>
-      <input id="login-email" type="email" placeholder="이메일" autocomplete="username" required />
-      <input id="login-password" type="password" placeholder="비밀번호" autocomplete="current-password" required />
-      <button id="login-btn" type="submit" class="btn">로그인</button>
-      <button id="forgot-btn" type="button" class="link-btn">비밀번호 재설정 메일 보내기</button>
-      <div id="login-error" class="login-error"></div>
-      <div id="login-info" class="login-info"></div>
-    </form>
-
-    <!-- 비번 재설정 메일 링크로 돌아오면(=recovery 세션) 이 폼이 대신 보인다. -->
-    <form id="recovery-form" class="login-card" style="display:none" autocomplete="on">
-      <div class="login-title"><span class="logo">⌖</span> 새 비밀번호 설정</div>
-      <div class="login-sub">메일 링크로 들어오셨습니다. 새 비밀번호를 입력하세요.</div>
-      <input id="new-password" type="password" placeholder="새 비밀번호 (6자 이상)" autocomplete="new-password" minlength="6" required />
-      <button id="recovery-btn" type="submit" class="btn">비밀번호 변경</button>
-      <div id="recovery-error" class="login-error"></div>
-    </form>
-
-    <!-- 로그인 없이도 받을 수 있는 공개 다운로드(일반 사용자용). 토큰은 관리자가 따로 전달. -->
-    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-setup.exe">⬇ Collector 설치 (Windows)</a>
-    <div class="dl-note">더블클릭 → 설치(무관리자) → 관리자에게 받은 <b>디바이스 토큰</b> 붙여넣기 → 끝. 제거는 <b>설정 → 앱</b>.</div>
-    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-proxy-setup.exe">🛰 API 프록시 서버 설치 (선택)</a>
-    <div class="dl-note">트래픽 로깅·통제 서버. 설치 후 더블클릭 실행. 켜기/끄기(라우팅)는 Collector 트레이 패널에서.</div>
-    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-agent-setup.exe">🐳 Agent 런처 설치 (선택)</a>
-    <div class="dl-note">VS Code 없이 컨테이너로 에이전트 격리 실행. <b>Docker</b> 필요. 실행: <code>periscribe-agent &lt;작업폴더&gt; --name &lt;이름&gt;</code></div>
-  </div>
-
   <!-- 머신 헬스(하트비트) 바 -->
   <div id="health-bar" class="health-bar needs-auth">
     <span id="health-chips"></span>
@@ -63,15 +45,15 @@
 
   <!-- 통제 현황 요약(KPI). 로드된 이벤트 기준 집계. 칩 클릭 시 해당 필터 적용. -->
   <div id="control-kpis" class="control-kpis needs-auth" title="로드된 이벤트 기준 통제 현황">
-    <button class="kpi kpi--block" data-kpi="blocked"><b id="kpi-blocked">0</b><span>🛡 차단</span></button>
-    <button class="kpi kpi--risk" data-kpi="risk"><b id="kpi-risk">0</b><span>⚠ 위험 동작</span></button>
-    <button class="kpi" data-kpi="machines"><b id="kpi-machines">0</b><span>🖥 머신</span></button>
-    <button class="kpi" data-kpi="sessions"><b id="kpi-sessions">0</b><span>💬 세션</span></button>
+    <button class="kpi kpi--block spotlight" data-kpi="blocked"><b id="kpi-blocked">0</b><span>🛡 차단</span></button>
+    <button class="kpi kpi--risk spotlight" data-kpi="risk"><b id="kpi-risk">0</b><span>⚠ 위험 동작</span></button>
+    <button class="kpi spotlight" data-kpi="machines"><b id="kpi-machines">0</b><span>🖥 머신</span></button>
+    <button class="kpi spotlight" data-kpi="sessions"><b id="kpi-sessions">0</b><span>💬 세션</span></button>
   </div>
 
   <!-- 머신 관리 모달 -->
   <div id="devices-modal" class="modal" style="display:none">
-    <div class="modal-card">
+    <div class="modal-card spotlight">
       <div class="modal-head">
         <span>머신 관리</span>
         <button id="devices-close" class="btn ghost btn-sm">닫기</button>
@@ -93,7 +75,7 @@
 
   <!-- 세션 관리 모달: 다중선택 일괄 삭제 -->
   <div id="sessions-modal" class="modal" style="display:none">
-    <div class="modal-card">
+    <div class="modal-card spotlight">
       <div class="modal-head">
         <span>세션 관리</span>
         <button id="sessions-close" class="btn ghost btn-sm">닫기</button>
@@ -110,7 +92,7 @@
 
   <!-- E2EE 암호화 게이트: 로그인 후 키 셋업/잠금해제. 운영자도 못 읽는 종단간 암호화. -->
   <div id="enc-modal" class="modal" style="display:none">
-    <div class="modal-card">
+    <div class="modal-card spotlight">
       <!-- 최초: 패스프레이즈 설정(키 생성) -->
       <form id="enc-setup" class="enc-form" style="display:none">
         <div class="modal-head"><span>🔐 암호화 설정 (최초 1회)</span></div>
@@ -210,6 +192,37 @@
     <button class="src-tab" data-src="os-exec" role="tab">🐚 OS</button>
   </nav>
   </div><!-- /topstack -->
+
+  <!-- 로그인 게이트: 인증 전엔 이것만 보인다 -->
+  <div id="login-gate" class="login-gate">
+    <form id="login-form" class="login-card spotlight" autocomplete="on">
+      <div class="login-title"><span class="logo">⌖</span> Periscribe</div>
+      <div class="login-sub">로그인이 필요합니다</div>
+      <input id="login-email" type="email" placeholder="이메일" autocomplete="username" required />
+      <input id="login-password" type="password" placeholder="비밀번호" autocomplete="current-password" required />
+      <button id="login-btn" type="submit" class="btn">로그인</button>
+      <button id="forgot-btn" type="button" class="link-btn">비밀번호 재설정 메일 보내기</button>
+      <div id="login-error" class="login-error"></div>
+      <div id="login-info" class="login-info"></div>
+    </form>
+
+    <!-- 비번 재설정 메일 링크로 돌아오면(=recovery 세션) 이 폼이 대신 보인다. -->
+    <form id="recovery-form" class="login-card spotlight" style="display:none" autocomplete="on">
+      <div class="login-title"><span class="logo">⌖</span> 새 비밀번호 설정</div>
+      <div class="login-sub">메일 링크로 들어오셨습니다. 새 비밀번호를 입력하세요.</div>
+      <input id="new-password" type="password" placeholder="새 비밀번호 (6자 이상)" autocomplete="new-password" minlength="6" required />
+      <button id="recovery-btn" type="submit" class="btn">비밀번호 변경</button>
+      <div id="recovery-error" class="login-error"></div>
+    </form>
+
+    <!-- 로그인 없이도 받을 수 있는 공개 다운로드(일반 사용자용). 토큰은 관리자가 따로 전달. -->
+    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-setup.exe">⬇ Collector 설치 (Windows)</a>
+    <div class="dl-note">더블클릭 → 설치(무관리자) → 관리자에게 받은 <b>디바이스 토큰</b> 붙여넣기 → 끝. 제거는 <b>설정 → 앱</b>.</div>
+    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-proxy-setup.exe">🛰 API 프록시 서버 설치 (선택)</a>
+    <div class="dl-note">트래픽 로깅·통제 서버. 설치 후 더블클릭 실행. 켜기/끄기(라우팅)는 Collector 트레이 패널에서.</div>
+    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-agent-setup.exe">🐳 Agent 런처 설치 (선택)</a>
+    <div class="dl-note">VS Code 없이 컨테이너로 에이전트 격리 실행. <b>Docker</b> 필요. 실행: <code>periscribe-agent &lt;작업폴더&gt; --name &lt;이름&gt;</code></div>
+  </div>
 
   <main id="feed" class="feed needs-auth">
     <div class="empty" id="empty">설정을 확인하는 중…</div>

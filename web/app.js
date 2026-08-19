@@ -1431,6 +1431,25 @@
     location.reload();                                   // 정상 세션으로 앱 재시작
   });
 
+  // ---------- 마우스 추적 스포트라이트(장식) ----------
+  // .spotlight 표면(KPI 카드·로그인 카드·모달)만 커서 위치를 CSS 변수로 받아 은은한 광원을 그린다.
+  // 위임 + rAF 로 프레임당 한 번만 쓰고, 로그 피드에는 걸지 않는다(카드 수천 개에서 비용).
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    let spotQueued = null;
+    document.addEventListener("pointermove", (e) => {
+      const el = e.target.closest && e.target.closest(".spotlight");
+      if (!el) return;
+      spotQueued = { el, x: e.clientX, y: e.clientY };
+      requestAnimationFrame(() => {
+        if (!spotQueued) return;
+        const { el: t, x, y } = spotQueued; spotQueued = null;
+        const r = t.getBoundingClientRect();
+        t.style.setProperty("--mx", (x - r.left) + "px");
+        t.style.setProperty("--my", (y - r.top) + "px");
+      });
+    }, { passive: true });
+  }
+
   // ---------- 시작 ----------
   // 비번 재설정 링크로 들어오면 URL 해시에 type=recovery 가 실려 온다(SDK가 곧 해시를 정리하므로 동기적으로 먼저 확인).
   const _hp = new URLSearchParams((location.hash || "").replace(/^#/, ""));
