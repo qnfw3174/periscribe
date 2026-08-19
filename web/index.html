@@ -20,13 +20,13 @@
     <div class="bg-noise"></div>
   </div>
 
-  <!-- 상단 고정 영역: 스크롤해도 topbar+헬스바+필터가 항상 보이게 한 덩어리로 고정 -->
-  <div class="topstack">
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo">⌖</span> Periscribe
-      <span class="tagline">AI 에이전트를 밖에서 관찰·기록</span>
-    </div>
+  <!-- 앱바: 신원 + 시스템 상태만. 주인공은 로그라 여기서 세로를 최소로 쓴다. -->
+  <header class="appbar">
+    <button id="nav-toggle" class="nav-toggle needs-auth" type="button" aria-label="사이드바 열기">☰</button>
+    <div class="brand"><span class="logo">⌖</span> Periscribe</div>
+    <span id="status-counts" class="status-counts needs-auth">
+      머신 <b id="kpi-machines">0</b>대 · 세션 <b id="kpi-sessions">0</b>개
+    </span>
     <div class="status">
       <span id="conn-dot" class="dot dot--off"></span>
       <span id="conn-text">연결 대기</span>
@@ -37,19 +37,129 @@
     </div>
   </header>
 
-  <!-- 머신 헬스(하트비트) 바 -->
-  <div id="health-bar" class="health-bar needs-auth">
-    <span id="health-chips"></span>
-    <button id="manage-devices" class="btn ghost btn-sm">⚙ 머신 관리</button>
+  <div class="shell needs-auth">
+    <!-- 좌측 레일 = "무엇을 볼 것인가"(대부분 DB 재조회라 무겁다). 상주하며 스크롤을 따라온다. -->
+    <aside id="sidebar" class="rail">
+      <nav class="rail-group source-tabs" id="source-tabs" role="tablist"
+           title="로깅 출처별로 나눠 봅니다. 같은 대화는 transcript와 API가 한 세션으로 묶입니다.">
+        <div class="rail-label">소스</div>
+        <button class="src-tab active" data-src="all" role="tab">전체</button>
+        <button class="src-tab" data-src="transcript" role="tab">📝 Transcript</button>
+        <button class="src-tab" data-src="api" role="tab">🛰 API (프록시)</button>
+        <button class="src-tab" data-src="os-exec" role="tab">🐚 OS</button>
+      </nav>
+
+      <!-- 머신: 헬스 표시와 필터를 한 항목으로 합쳤다(누르면 그 머신만 본다). -->
+      <div class="rail-group">
+        <div class="rail-label">머신</div>
+        <div id="health-chips" class="machine-list"></div>
+        <button id="manage-devices" class="rail-action">⚙ 머신 관리</button>
+      </div>
+
+      <!-- 세션: 선택과 그 세션에 대한 행동을 한 곳에 모은다. -->
+      <div class="rail-group">
+        <div class="rail-label">세션</div>
+        <select id="f-session" aria-label="세션 필터"><option value="">전체 세션</option></select>
+        <button id="backfill-session" class="rail-action" style="display:none"
+                title="설치 이전 기록은 그 PC 로컬에만 있습니다. 수집 PC가 온라인일 때 받아서 채웁니다.">⟳ 과거 전체 불러오기</button>
+        <button id="delete-session" class="rail-action danger" style="display:none"
+                title="중앙 DB의 이벤트·목록과 수집 PC의 로컬 transcript 파일까지 영구 삭제합니다.">🗑 이 세션 삭제</button>
+        <button id="manage-sessions" class="rail-action">🗂 세션 관리</button>
+      </div>
+
+      <div class="rail-group">
+        <div class="rail-label">필터</div>
+        <label class="rail-field">종류
+          <select id="f-kind">
+            <option value="">전체</option>
+            <option value="user_prompt">user_prompt</option>
+            <option value="assistant_text">assistant_text</option>
+            <option value="tool_use">tool_use</option>
+            <option value="tool_result">tool_result</option>
+            <option value="process_exec">🐚 process_exec (OS)</option>
+          </select>
+        </label>
+        <label class="rail-field">카테고리
+          <select id="f-category"><option value="">전체</option></select>
+        </label>
+        <label class="rail-field">컨테이너
+          <select id="f-container"><option value="">전체</option></select>
+        </label>
+        <button id="reload" class="rail-action">↻ 다시 로드</button>
+      </div>
+
+      <!-- 상태 저장용 숨은 컨트롤. 머신 리스트·칩이 여기에 값을 쓰고 change 를 쏘면
+           기존 app.js 리스너(서버/클라이언트 필터 분기)가 그대로 동작한다. -->
+      <div class="sr-only">
+        <label>머신 <select id="f-machine"><option value="">전체</option></select></label>
+        <label>심각도
+          <select id="f-severity">
+            <option value="">전체</option>
+            <option value="critical">🔴 크리티컬만</option>
+            <option value="warn">🟡 경고 이상</option>
+          </select>
+        </label>
+        <label><input id="f-errors" type="checkbox" /> 실패만</label>
+        <label><input id="f-blocked" type="checkbox" /> 차단만</label>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <!-- 좁혀 보기(즉시 반영) + 현황. 로그 바로 위에 붙인다. -->
+      <div id="control-kpis" class="chipbar" title="로드된 이벤트 기준">
+        <button class="chip kpi--block" data-kpi="blocked">🛡 차단 <b id="kpi-blocked">0</b></button>
+        <button class="chip kpi--risk" data-kpi="risk">⚠ 위험 <b id="kpi-risk">0</b></button>
+        <button class="chip chip--err" data-kpi="errors">✖ 실패 <b id="kpi-errors">0</b></button>
+        <label class="chip-search">
+          <input id="f-text" type="search" placeholder="명령/텍스트 검색…" aria-label="검색" />
+        </label>
+        <span id="count" class="count"></span>
+      </div>
+
+      <div class="loadmore-bar">
+        <button id="load-more" class="btn ghost btn-sm" style="display:none">↑ 더 불러오기 (과거)</button>
+      </div>
+
+      <main id="feed" class="feed">
+        <div class="empty" id="empty">설정을 확인하는 중…</div>
+      </main>
+    </div>
   </div>
 
-  <!-- 통제 현황 요약(KPI). 로드된 이벤트 기준 집계. 칩 클릭 시 해당 필터 적용. -->
-  <div id="control-kpis" class="control-kpis needs-auth" title="로드된 이벤트 기준 통제 현황">
-    <button class="kpi kpi--block spotlight" data-kpi="blocked"><b id="kpi-blocked">0</b><span>🛡 차단</span></button>
-    <button class="kpi kpi--risk spotlight" data-kpi="risk"><b id="kpi-risk">0</b><span>⚠ 위험 동작</span></button>
-    <button class="kpi spotlight" data-kpi="machines"><b id="kpi-machines">0</b><span>🖥 머신</span></button>
-    <button class="kpi spotlight" data-kpi="sessions"><b id="kpi-sessions">0</b><span>💬 세션</span></button>
+  <!-- 로그인 게이트: 인증 전엔 이것만 보인다 -->
+  <div id="login-gate" class="login-gate">
+    <form id="login-form" class="login-card spotlight" autocomplete="on">
+      <div class="login-title"><span class="logo">⌖</span> Periscribe</div>
+      <div class="login-sub">로그인이 필요합니다</div>
+      <input id="login-email" type="email" placeholder="이메일" autocomplete="username" required />
+      <input id="login-password" type="password" placeholder="비밀번호" autocomplete="current-password" required />
+      <button id="login-btn" type="submit" class="btn">로그인</button>
+      <button id="forgot-btn" type="button" class="link-btn">비밀번호 재설정 메일 보내기</button>
+      <div id="login-error" class="login-error"></div>
+      <div id="login-info" class="login-info"></div>
+    </form>
+
+    <!-- 비번 재설정 메일 링크로 돌아오면(=recovery 세션) 이 폼이 대신 보인다. -->
+    <form id="recovery-form" class="login-card spotlight" style="display:none" autocomplete="on">
+      <div class="login-title"><span class="logo">⌖</span> 새 비밀번호 설정</div>
+      <div class="login-sub">메일 링크로 들어오셨습니다. 새 비밀번호를 입력하세요.</div>
+      <input id="new-password" type="password" placeholder="새 비밀번호 (6자 이상)" autocomplete="new-password" minlength="6" required />
+      <button id="recovery-btn" type="submit" class="btn">비밀번호 변경</button>
+      <div id="recovery-error" class="login-error"></div>
+    </form>
+
+    <!-- 로그인 없이도 받을 수 있는 공개 다운로드(일반 사용자용). 토큰은 관리자가 따로 전달. -->
+    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-setup.exe">⬇ Collector 설치 (Windows)</a>
+    <div class="dl-note">더블클릭 → 설치(무관리자) → 관리자에게 받은 <b>디바이스 토큰</b> 붙여넣기 → 끝. 제거는 <b>설정 → 앱</b>.</div>
+    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-proxy-setup.exe">🛰 API 프록시 서버 설치 (선택)</a>
+    <div class="dl-note">트래픽 로깅·통제 서버. 설치 후 더블클릭 실행. 켜기/끄기(라우팅)는 Collector 트레이 패널에서.</div>
+    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-agent-setup.exe">🐳 Agent 런처 설치 (선택)</a>
+    <div class="dl-note">VS Code 없이 컨테이너로 에이전트 격리 실행. <b>Docker</b> 필요. 실행: <code>periscribe-agent &lt;작업폴더&gt; --name &lt;이름&gt;</code></div>
   </div>
+
+  <!-- 맨 아래(최신)로 되돌아가는 플로팅 버튼. 바닥 근처가 아닐 때만 보인다. -->
+  <button id="jump-bottom" class="jump-bottom needs-auth" type="button" hidden
+          title="최신 로그로 이동 (End)">⬇ 최신 로그<span id="jump-bottom-new" class="jump-new"></span></button>
 
   <!-- 머신 관리 모달 -->
   <div id="devices-modal" class="modal" style="display:none">
@@ -135,102 +245,6 @@
       </form>
     </div>
   </div>
-
-  <section class="filters needs-auth">
-    <label>머신
-      <select id="f-machine"><option value="">전체</option></select>
-    </label>
-    <label>세션
-      <select id="f-session"><option value="">전체</option></select>
-    </label>
-    <label>종류
-      <select id="f-kind">
-        <option value="">전체</option>
-        <option value="user_prompt">user_prompt</option>
-        <option value="assistant_text">assistant_text</option>
-        <option value="tool_use">tool_use</option>
-        <option value="tool_result">tool_result</option>
-        <option value="process_exec">🐚 process_exec (OS)</option>
-      </select>
-    </label>
-    <label>심각도
-      <select id="f-severity">
-        <option value="">전체</option>
-        <option value="critical">🔴 크리티컬만</option>
-        <option value="warn">🟡 경고 이상</option>
-      </select>
-    </label>
-    <label>카테고리
-      <select id="f-category"><option value="">전체</option></select>
-    </label>
-    <label>컨테이너
-      <select id="f-container"><option value="">전체</option></select>
-    </label>
-    <label class="search">검색
-      <input id="f-text" type="search" placeholder="명령/텍스트 포함…" />
-    </label>
-    <label class="chk"><input id="f-errors" type="checkbox" /> 실패만</label>
-    <label class="chk"><input id="f-blocked" type="checkbox" /> 🛡 차단만</label>
-    <button id="reload" class="btn">다시 로드</button>
-    <button id="manage-sessions" class="btn ghost">🗂 세션 관리</button>
-    <span id="count" class="count"></span>
-  </section>
-
-  <div class="loadmore-bar needs-auth">
-    <button id="load-more" class="btn ghost" style="display:none">↑ 더 불러오기 (과거)</button>
-    <button id="backfill-session" class="btn ghost" style="display:none"
-            title="설치 이전 기록은 그 PC 로컬에만 있습니다. 수집 PC가 온라인일 때 받아서 채웁니다.">⟳ 이 세션 과거 전체 불러오기 (수집 PC)</button>
-    <button id="delete-session" class="btn ghost danger" style="display:none"
-            title="중앙 DB의 이벤트·목록과 수집 PC의 로컬 transcript 파일까지 영구 삭제합니다.">🗑 이 세션 삭제</button>
-  </div>
-
-  <nav class="source-tabs needs-auth" id="source-tabs" role="tablist"
-       title="로깅 출처별로 나눠 봅니다. 같은 대화는 transcript와 API가 한 세션으로 묶입니다.">
-    <button class="src-tab active" data-src="all" role="tab">전체</button>
-    <button class="src-tab" data-src="transcript" role="tab">📝 Transcript</button>
-    <button class="src-tab" data-src="api" role="tab">🛰 API (프록시)</button>
-    <button class="src-tab" data-src="os-exec" role="tab">🐚 OS</button>
-  </nav>
-  </div><!-- /topstack -->
-
-  <!-- 로그인 게이트: 인증 전엔 이것만 보인다 -->
-  <div id="login-gate" class="login-gate">
-    <form id="login-form" class="login-card spotlight" autocomplete="on">
-      <div class="login-title"><span class="logo">⌖</span> Periscribe</div>
-      <div class="login-sub">로그인이 필요합니다</div>
-      <input id="login-email" type="email" placeholder="이메일" autocomplete="username" required />
-      <input id="login-password" type="password" placeholder="비밀번호" autocomplete="current-password" required />
-      <button id="login-btn" type="submit" class="btn">로그인</button>
-      <button id="forgot-btn" type="button" class="link-btn">비밀번호 재설정 메일 보내기</button>
-      <div id="login-error" class="login-error"></div>
-      <div id="login-info" class="login-info"></div>
-    </form>
-
-    <!-- 비번 재설정 메일 링크로 돌아오면(=recovery 세션) 이 폼이 대신 보인다. -->
-    <form id="recovery-form" class="login-card spotlight" style="display:none" autocomplete="on">
-      <div class="login-title"><span class="logo">⌖</span> 새 비밀번호 설정</div>
-      <div class="login-sub">메일 링크로 들어오셨습니다. 새 비밀번호를 입력하세요.</div>
-      <input id="new-password" type="password" placeholder="새 비밀번호 (6자 이상)" autocomplete="new-password" minlength="6" required />
-      <button id="recovery-btn" type="submit" class="btn">비밀번호 변경</button>
-      <div id="recovery-error" class="login-error"></div>
-    </form>
-
-    <!-- 로그인 없이도 받을 수 있는 공개 다운로드(일반 사용자용). 토큰은 관리자가 따로 전달. -->
-    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-setup.exe">⬇ Collector 설치 (Windows)</a>
-    <div class="dl-note">더블클릭 → 설치(무관리자) → 관리자에게 받은 <b>디바이스 토큰</b> 붙여넣기 → 끝. 제거는 <b>설정 → 앱</b>.</div>
-    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-proxy-setup.exe">🛰 API 프록시 서버 설치 (선택)</a>
-    <div class="dl-note">트래픽 로깅·통제 서버. 설치 후 더블클릭 실행. 켜기/끄기(라우팅)는 Collector 트레이 패널에서.</div>
-    <a class="dl-link" href="https://github.com/qnfw3174/periscribe-dist/releases/latest/download/periscribe-agent-setup.exe">🐳 Agent 런처 설치 (선택)</a>
-    <div class="dl-note">VS Code 없이 컨테이너로 에이전트 격리 실행. <b>Docker</b> 필요. 실행: <code>periscribe-agent &lt;작업폴더&gt; --name &lt;이름&gt;</code></div>
-  </div>
-
-  <main id="feed" class="feed needs-auth">
-    <div class="empty" id="empty">설정을 확인하는 중…</div>
-  </main>
-
-  <!-- 맨 아래(최신)로 되돌아가는 플로팅 버튼. 바닥 근처가 아닐 때만 보인다. -->
-  <button id="jump-bottom" class="jump-bottom needs-auth" type="button" hidden
-          title="최신 로그로 이동 (End)">⬇ 최신 로그<span id="jump-bottom-new" class="jump-new"></span></button>
 
   <!-- Supabase JS (CDN). config.js 는 anon 키만 포함 -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>

@@ -534,13 +534,17 @@
       if (ev.machine_id) machines.add(ev.machine_id);
       if (ev.session_id) sessions.add(ev.session_id);
     }
+    let errors = 0;
+    for (const ev of store.values()) if (ev.is_error === true) errors++;
     const set = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
-    set("kpi-blocked", blocked); set("kpi-risk", risk);
+    set("kpi-blocked", blocked); set("kpi-risk", risk); set("kpi-errors", errors);
     set("kpi-machines", machines.size); set("kpi-sessions", sessions.size);
     const bk = document.querySelector('.kpi--block');
     const rk = document.querySelector('.kpi--risk');
+    const ek = document.querySelector('.chip--err');
     if (bk) bk.classList.toggle("active", !!(F.blocked && F.blocked.checked));
     if (rk) rk.classList.toggle("active", F.severity.value === "critical");
+    if (ek) { ek.classList.toggle("active", !!(F.errors && F.errors.checked)); ek.classList.remove("busy"); }
   }
 
   // ---------- 최신 로그로 점프 ----------
@@ -671,7 +675,7 @@
       b.style.display = on ? "" : "none";
       if (on && !b.dataset.busy) {
         b.disabled = false;
-        b.textContent = "⟳ 이 세션 과거 전체 불러오기 (수집 PC)";
+        b.textContent = "⟳ 과거 전체 불러오기";
       }
     }
     const d = document.getElementById("delete-session");
@@ -799,13 +803,44 @@
   // 심각도/카테고리/차단 = 클라이언트 분류·복호 결과 → 로드된 것에서 즉시 필터.
   [F.severity, F.category, F.blocked].forEach((el) =>
     el && el.addEventListener("change", () => render(false)));
-  // 통제 현황 KPI 칩 클릭 → 해당 필터 토글.
+  // 상태 칩(차단/위험/실패) = 숨은 필터 컨트롤의 토글 UI. 지표와 필터를 한 물건으로 합쳤다.
   const kpiBar = document.getElementById("control-kpis");
   if (kpiBar) kpiBar.addEventListener("click", (e) => {
-    const k = e.target.closest(".kpi"); if (!k) return;
+    const k = e.target.closest(".chip"); if (!k) return;
     const which = k.dataset.kpi;
     if (which === "blocked" && F.blocked) { F.blocked.checked = !F.blocked.checked; render(false); }
     else if (which === "risk") { F.severity.value = (F.severity.value === "critical") ? "" : "critical"; render(false); }
+    else if (which === "errors" && F.errors) {
+      // 실패만은 서버측 필터(DB 재조회) → 기존 리스너를 그대로 태우고 진행 중임을 알린다.
+      F.errors.checked = !F.errors.checked;
+      k.classList.toggle("active", F.errors.checked);
+      k.classList.add("busy");
+      F.errors.dispatchEvent(new Event("change"));
+    }
+  });
+
+  // 사이드바 머신 행 클릭 = 머신 필터(숨은 #f-machine)에 값 세팅 → 기존 서버 필터 경로 재사용.
+  const machineList = document.getElementById("health-chips");
+  if (machineList) machineList.addEventListener("click", (e) => {
+    const row = e.target.closest(".machine-row"); if (!row || !F.machine) return;
+    const mid = row.dataset.machine || "";
+    if (F.machine.value === mid) return;
+    F.machine.value = mid;
+    F.machine.dispatchEvent(new Event("change"));   // → loadHistory
+    machineList.querySelectorAll(".machine-row").forEach((r) =>
+      r.classList.toggle("active", r === row));
+  });
+
+  // 모바일: 사이드바를 서랍으로 열고 닫는다(데스크톱에선 버튼 자체가 숨겨져 있다).
+  const navToggle = document.getElementById("nav-toggle");
+  if (navToggle) navToggle.addEventListener("click", () => document.body.classList.toggle("nav-open"));
+  const sidebarEl = document.getElementById("sidebar");
+  if (sidebarEl) sidebarEl.addEventListener("click", (e) => {
+    // 서랍에서 무언가를 고르면 닫아 준다(선택 후 로그가 바로 보이게).
+    if (document.body.classList.contains("nav-open") &&
+        e.target.closest(".machine-row, .src-tab, .rail-action")) {
+      document.body.classList.remove("nav-open");
+    }
   });
   // 로깅 출처 탭 = 클라이언트 필터(이미 로드된 이벤트의 source 기준).
   const sourceTabs = document.getElementById("source-tabs");
@@ -1002,21 +1037,28 @@
     const list = Array.from(deviceMap.values()).filter((d) => !d.revoked)
       .sort((a, b) => (deviceLabel(a) < deviceLabel(b) ? -1 : 1));
     if (list.length === 0) {
-      healthChips.innerHTML = '<span class="health-empty">등록된 머신 없음 — ⚙ 머신 관리에서 추가</span>';
+      healthChips.innerHTML = '<span class="health-empty">등록된 머신 없음</span>';
       return;
     }
+    // 사이드바에서는 상태 표시와 머신 필터가 한 항목이다. 선택 상태는 숨은 #f-machine 이 보관.
+    const selected = F.machine ? F.machine.value : "";
+    const allRow = `<button type="button" class="machine-row${selected ? "" : " active"}" data-machine="">` +
+      `<span class="mdot mdot--all"></span><span class="mname">전체 머신</span></button>`;
     // 온라인→오프라인 전환이 보이면 Realtime 이 조용히 끊긴 것일 수 있으니, 오프라인으로
     // 확정하기 전에 DB 에서 last_seen 을 한 번 재확인한다(깜빡이는 false offline 방지).
     let flippedOffline = false;
-    healthChips.innerHTML = list.map((d) => {
+    healthChips.innerHTML = allRow + list.map((d) => {
       const on = isOnline(d);
       if (wasOnline.get(d.id) === true && !on) flippedOffline = true;
       wasOnline.set(d.id, on);
       const warn = d.last_error
         ? `<span class="dev-warn" title="${esc(d.last_error)}">⚠</span>` : "";
-      return `<span class="machine-chip ${on ? "online" : "stale"}" title="${esc(d.platform || "")} · v${esc(d.collector_version || "?")}">` +
+      const mid = d.machine_id || "";
+      const act = mid && mid === selected ? " active" : "";
+      return `<button type="button" class="machine-row ${on ? "online" : "stale"}${act}" data-machine="${esc(mid)}" ` +
+        `title="${esc(d.platform || "")} · v${esc(d.collector_version || "?")}">` +
         `<span class="mdot"></span><span class="mname">${esc(deviceLabel(d))}</span>${warn}` +
-        `<span class="mseen">${on ? "온라인" : (d.last_seen ? relTime(d.last_seen) : "대기")}</span></span>`;
+        `<span class="mseen">${on ? "온라인" : (d.last_seen ? relTime(d.last_seen) : "대기")}</span></button>`;
     }).join("");
     if (flippedOffline && !confirmOfflineTimer) {
       // 즉시 한 번 DB 재확인(짧게 디바운스해 5초 렌더 루프가 매번 재조회하지 않도록).
