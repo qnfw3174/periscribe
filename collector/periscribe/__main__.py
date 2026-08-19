@@ -564,6 +564,13 @@ def _proxy_enable(config_path: Path, port: int = 0) -> tuple[bool, list[str]]:
                              "at": time.strftime("%Y-%m-%d %H:%M:%S")})
     if ca_was_resident:
         out.append(f"완료 ✅  즉시 적용(실행 중 Claude 세션 포함) → 프록시 경유(웹 🛰 API). base_url={base_url}")
+        # 프록시 서버가 방금 CA 를 재발급했다면(구버전 CA 교체 등) 이미 떠 있는 세션은 옛 CA 를
+        # 물고 있어 TLS 가 깨진다. 파일이 최근에 바뀐 경우에만 재시작을 안내한다.
+        try:
+            if time.time() - ca_pem.stat().st_mtime < 600:
+                out.append("  ⚠ CA 가 방금 재발급됐습니다 — 그 전에 시작된 Claude 세션은 1회 재시작하세요.")
+        except OSError:
+            pass
     else:
         out.append(f"완료 ✅  프록시 경유(웹 🛰 API). base_url={base_url}")
         out.append("  ⚠ 지금 떠 있는 Claude 세션은 이번 1회만 재시작 필요(신뢰 CA가 세션 시작 시에만 로드됨). 이후 토글은 무중단.")
