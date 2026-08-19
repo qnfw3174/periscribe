@@ -277,3 +277,21 @@ body.authed .source-tabs { display: flex; }
 .truncated:hover { color: var(--accent); }
 .badge-bg { color: var(--bash); font-size: 11px; }
 .sidechain { color: #c792ea; font-size: 11px; }
+
+/* 최신 로그로 점프 — 피드가 window 스크롤이라 뷰포트 하단에 고정한다.
+   바닥 근처에서는 JS 가 hidden 을 걸어 숨기므로 :not([hidden]) 로만 표시. */
+.jump-bottom {
+  position: fixed; right: 20px; bottom: 20px; z-index: 20;
+  align-items: center; gap: 6px;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+}
+body.authed .jump-bottom:not([hidden]) { display: flex; }
+.jump-bottom:hover { border-color: var(--accent); color: var(--accent); }
+/* 스크롤을 올려둔 사이에 들어온 새 이벤트 건수(없으면 비어 있어 표시 안 됨) */
+.jump-new:not(:empty) {
+  background: var(--accent); color: #0b0d11; border-radius: 999px;
+  padding: 1px 7px; font-size: 11px; font-weight: 700;
+}

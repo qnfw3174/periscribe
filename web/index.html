@@ -215,6 +215,10 @@
     <div class="empty" id="empty">설정을 확인하는 중…</div>
   </main>
 
+  <!-- 맨 아래(최신)로 되돌아가는 플로팅 버튼. 바닥 근처가 아닐 때만 보인다. -->
+  <button id="jump-bottom" class="jump-bottom needs-auth" type="button" hidden
+          title="최신 로그로 이동 (End)">⬇ 최신 로그<span id="jump-bottom-new" class="jump-new"></span></button>
+
   <!-- Supabase JS (CDN). config.js 는 anon 키만 포함 -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
   <script src="config.js"></script>

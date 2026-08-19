@@ -543,8 +543,49 @@
     if (rk) rk.classList.toggle("active", F.severity.value === "critical");
   }
 
+  // ---------- 최신 로그로 점프 ----------
+  // 피드는 window 스크롤이다(내부 스크롤 컨테이너 아님). 바닥 근처면 새 이벤트를 따라가고,
+  // 사용자가 위를 읽고 있으면 위치를 지키는 대신 플로팅 버튼으로 되돌아갈 길을 준다.
+  const NEAR_BOTTOM_PX = 120;
+  const jumpBtn = document.getElementById("jump-bottom");
+  const jumpNewEl = document.getElementById("jump-bottom-new");
+  let awayNew = 0;   // 바닥을 벗어나 있는 동안 도착한 새 이벤트 수
+
+  function isNearBottom() {
+    return window.innerHeight + window.scrollY >= document.body.scrollHeight - NEAR_BOTTOM_PX;
+  }
+
+  // 옵션 객체형 scrollTo(behavior:"smooth")는 환경에 따라 조용히 무시된다(버튼이 먹통으로 보임).
+  // 피드는 어차피 '최신으로 튀어가는' 동작이라 기존 렌더 경로와 같은 즉시 이동형으로 통일한다.
+  function scrollToBottom() {
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+
+  function updateJumpBtn() {
+    if (!jumpBtn) return;
+    const near = isNearBottom();
+    if (near) awayNew = 0;
+    if (jumpNewEl) jumpNewEl.textContent = awayNew ? String(awayNew) : "";
+    jumpBtn.hidden = near;
+  }
+
+  if (jumpBtn) {
+    jumpBtn.addEventListener("click", () => { awayNew = 0; scrollToBottom(); updateJumpBtn(); });
+    window.addEventListener("scroll", updateJumpBtn, { passive: true });
+    window.addEventListener("resize", updateJumpBtn);
+    // End 키로도 최신으로(입력 중에는 방해하지 않는다).
+    window.addEventListener("keydown", (e) => {
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
+      if (e.key === "End") { awayNew = 0; scrollToBottom(); }
+    });
+  }
+
   function render(scrollBottom) {
     updateControlKpis();
+    // 판정은 DOM 재구성 전에. feedEl 을 비우면 문서 높이가 무너져 항상 '바닥'이 되어버린다.
+    const wasNearBottom = isNearBottom();
+    const prevShown = lastShown;
     const list = Array.from(store.values()).filter(passesFilter);
     list.sort(cmpEvents);
     feedEl.innerHTML = "";
@@ -553,6 +594,8 @@
       emptyEl.textContent = store.size === 0 ? "이벤트 없음. Collector 가 도는지 확인하세요." : "필터에 맞는 이벤트 없음.";
       lastShown = 0;
       countEl.textContent = countText(0);
+      awayNew = 0;
+      updateJumpBtn();   // 목록이 비면 점프 버튼도 숨긴다
       return;
     }
     const frag = document.createDocumentFragment();
@@ -560,7 +603,12 @@
     feedEl.appendChild(frag);
     lastShown = list.length;
     countEl.textContent = countText(list.length);
-    if (scrollBottom) window.scrollTo(0, document.body.scrollHeight);
+    // 새 이벤트 따라가기는 이미 바닥에 있을 때만. 위를 읽는 중이면 위치를 지키고 버튼으로 알린다.
+    if (scrollBottom) {
+      if (wasNearBottom) scrollToBottom();
+      else awayNew += Math.max(0, list.length - prevShown);   // 버튼에 표시할 새 로그 건수
+    }
+    updateJumpBtn();
   }
 
   // ---------- 데이터 ----------
