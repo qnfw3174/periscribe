@@ -820,7 +820,11 @@
     const { error } = await client.rpc("purge_session", { p_session_id: sid });
     if (error) {
       delete deleteBtn.dataset.busy;
-      deleteBtn.disabled = false; deleteBtn.textContent = "삭제 실패: " + esc(error.message);
+      // 이벤트가 아주 많은 세션은 한 번의 delete 가 서버 statement timeout 을 넘길 수 있다.
+      deleteBtn.disabled = false;
+      deleteBtn.textContent = isTimeoutErr(error)
+        ? "삭제 실패: 시간 초과 — 잠시 후 다시 시도"
+        : "삭제 실패: " + esc(error.message);
       return;
     }
     delete deleteBtn.dataset.busy;
@@ -878,6 +882,27 @@
     document.querySelectorAll("#sessions-list .sess-chk").forEach((c) => { c.checked = sessAll.checked; });
     updateSessionSelCount();
   });
+  // 서버 statement timeout(Supabase authenticated 롤 기본 8초)을 넘기지 않게 나눠 호출한다.
+  // 수백 개를 한 번에 보내면 events 삭제가 한 트랜잭션에 묶여 취소(57014)되고, 롤백되어
+  // 한 개도 지워지지 않는다. 타임아웃이 나면 청크를 절반으로 줄여 같은 조각을 다시 시도.
+  const isTimeoutErr = (e) =>
+    !!e && (e.code === "57014" || /statement timeout|canceling statement/i.test(e.message || ""));
+  async function purgeSessionsChunked(ids, onProgress) {
+    let chunk = 20, i = 0, deleted = 0;
+    const failed = [];
+    while (i < ids.length) {
+      const slice = ids.slice(i, i + chunk);
+      const { data, error } = await client.rpc("purge_sessions", { p_session_ids: slice });
+      if (error) {
+        if (isTimeoutErr(error) && chunk > 1) { chunk = Math.max(1, chunk >> 1); continue; }
+        failed.push({ ids: slice, message: error.message });   // 이 조각만 포기하고 나머지 진행
+      } else deleted += Number(data) || 0;
+      i += slice.length;
+      if (onProgress) onProgress(i, ids.length);
+    }
+    return { deleted, failed };
+  }
+
   const sessDelete = document.getElementById("sessions-delete");
   if (sessDelete) sessDelete.addEventListener("click", async () => {
     const ids = [...document.querySelectorAll("#sessions-list .sess-chk:checked")].map((c) => c.value);
@@ -885,9 +910,16 @@
     if (!confirm(`선택한 ${ids.length}개 세션을 영구 삭제합니다.\n\n중앙 DB의 이벤트·목록은 즉시 삭제되고, `
       + `수집 PC의 로컬 transcript 파일은 그 PC가 온라인일 때 삭제됩니다. 되돌릴 수 없습니다. 계속할까요?`)) return;
     sessDelete.disabled = true; sessDelete.textContent = "삭제 중…";
-    const { error } = await client.rpc("purge_sessions", { p_session_ids: ids });
+    const { failed } = await purgeSessionsChunked(ids, (done, total) => {
+      sessDelete.textContent = `삭제 중… ${done}/${total}`;
+    });
     sessDelete.textContent = "🗑 선택 삭제";
-    if (error) { alert("삭제 실패: " + error.message); sessDelete.disabled = false; return; }
+    if (failed.length) {
+      const n = failed.reduce((a, f) => a + f.ids.length, 0);
+      alert(`${ids.length}개 중 ${n}개 삭제 실패: ${failed[0].message}\n\n`
+        + "나머지는 삭제됐습니다. 목록을 확인하고 남은 것만 다시 시도하세요.");
+      sessDelete.disabled = false;
+    }
     if (ids.includes(F.session.value)) F.session.value = "";
     renderSessionsList((await fetchSessionRows()).rows);  // 모달 목록 갱신
     await loadFilterOptions();                              // 드롭다운 갱신

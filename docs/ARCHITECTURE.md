@@ -179,7 +179,7 @@ owner 공개키 ─RSA-OAEP wrap→ per-device DEK ─AES-256-GCM→ events.payl
 | `session_catalog` | 컬렉터가 하트비트로 보고하는 **로컬 존재 세션 목록**(내용 미적재 포함). 웹이 전체 과거를 나열하고 선택 백필 |
 | `backfill_requests` | 웹 → 하트비트 응답 → 컬렉터가 해당 파일을 처음부터 재적재(멱등) |
 | `delete_requests` | 세션 삭제 시 **머신의 로컬 transcript 파일까지** 지우라는 명령 큐 |
-| `purge_device` / `purge_session` / `purge_sessions` | `security definer` 함수. events에는 authenticated delete RLS가 없으므로 소유 검증 후 함수가 지운다 |
+| `purge_device` / `purge_session` / `purge_sessions` | `security definer` 함수. events에는 authenticated delete RLS가 없으므로 소유 검증 후 함수가 지운다. 웹은 `purge_sessions`를 **20개씩 나눠** 호출한다(한 트랜잭션이 statement timeout에 걸리면 전량 롤백되므로) |
 | `devices.machine_guid` | Windows MachineGuid 기준 디바이스 연속성 — 재설치로 토큰이 바뀌어도 같은 행에 이어짐 |
 | `prune_events` + `pg_cron` | 매일 03:00, 기본 90일 보존 |
 | `sessions` 뷰 | `security_invoker=true`로 events RLS를 상속 → 드롭다운도 자동으로 owner 격리 |

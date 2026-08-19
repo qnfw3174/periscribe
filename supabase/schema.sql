@@ -34,6 +34,10 @@ create table if not exists public.events (
 create index if not exists events_owner_ts_idx      on public.events (owner_id, ts);
 create index if not exists events_session_ts_idx    on public.events (session_id, ts);
 create index if not exists events_tool_use_id_idx    on public.events (tool_use_id);
+-- 세션 삭제(purge_session/purge_sessions) 전용: owner+session 으로 지울 행을 바로 찾고,
+-- 로컬삭제 큐잉의 distinct device_id 를 index-only scan 으로 끝내 힙 접근을 없앤다.
+-- (없으면 세션당 전체 이벤트를 힙에서 훑어 statement timeout 으로 취소된다)
+create index if not exists events_owner_session_idx  on public.events (owner_id, session_id, device_id);
 create index if not exists events_kind_idx           on public.events (kind);
 
 -- Realtime
