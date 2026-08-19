@@ -54,8 +54,10 @@ transcript와 API 이벤트는 같은 `session_id`로 합쳐져 웹에서 한 �
 | `periscribe-proxy.exe` | API 프록시 **서버 본체**. 자체 CA로 TLS 종료 후 검사·통제·로깅 |
 | `periscribe-agent.exe` | VS Code 없이 Docker 샌드박스에서 Claude Code 실행 |
 
-## 빠른 시작 (멀티테넌트 서비스)
-배포 전체 절차는 [docs/DEPLOY.md](./docs/DEPLOY.md). 핵심 흐름:
+## 빠른 시작
+
+처음 도입하시는 분은 **[docs/GETTING-STARTED.md](./docs/GETTING-STARTED.md)** 를 보세요 — Supabase 준비부터
+자기 PC 설치까지 순서대로, 약 30분입니다. 아래는 그 요약이고 상세 절차는 [docs/DEPLOY.md](./docs/DEPLOY.md).
 
 1. **Supabase**: `supabase/schema.sql` 실행 + `supabase/functions/ingest` 배포(verify_jwt=false)
    + 관리자 로그인 계정 생성 + 공개 가입 OFF.
@@ -115,7 +117,10 @@ transcript와 API 이벤트는 같은 `session_id`로 합쳐져 웹에서 한 �
 
 | 문서 | 목적 |
 |---|---|
-| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | **현행 시스템 전체상** — 여기서 시작 |
+| [docs/GETTING-STARTED.md](./docs/GETTING-STARTED.md) | **처음 도입하는 분은 여기부터** — Supabase부터 설치까지 |
+| [docs/manual.html](./docs/manual.html) | 기능별 상세 사용법(토큰만 받아 설치하는 분 포함) |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | 현행 시스템 전체상 — 기여하려면 여기부터 |
+| [docs/TEST-RUN.md](./docs/TEST-RUN.md) | 관리자 PC ↔ 클라이언트 PC 실동작 테스트 순서 |
 | [periscribe-spec.md](./periscribe-spec.md) | 초기 코어 설계(transcript 수집). 히스토리 |
 | [docs/E2EE-DESIGN.md](./docs/E2EE-DESIGN.md) | 종단간 암호화 키 계층·플로우·한계 |
 | [docs/DEPLOY.md](./docs/DEPLOY.md) | 배포 절차 |
