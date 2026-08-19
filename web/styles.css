@@ -278,14 +278,23 @@ input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px;
 .rail {
   position: sticky; top: var(--appbar-h); height: calc(100vh - var(--appbar-h));
   overflow-y: auto; overscroll-behavior: contain;
-  display: flex; flex-direction: column; gap: 18px; padding: 16px 12px 24px;
+  display: flex; flex-direction: column; gap: 12px; padding: 12px 10px 24px;
   background: var(--zone-rail);
   box-shadow: 1px 0 0 0 var(--border-default);
 }
-.rail-group { display: flex; flex-direction: column; gap: 4px; }
+/* 그룹 = 실제 컨테이너. 라벨만 얹으면 하위 항목이 어디에 속하는지 읽히지 않는다.
+   한 단계 밝은 표면 + 헤어라인 테두리로 담고, 머리글은 그 안에서 구분선으로 끊는다. */
+.rail-group {
+  display: flex; flex-direction: column; gap: 1px;
+  background: rgba(255, 255, 255, .022);
+  border-radius: var(--r-lg);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+  padding: 0 6px 6px;
+}
 .rail-label {
   font-family: var(--font-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
-  color: var(--fg-muted); padding: 0 8px 4px;
+  color: var(--fg-subtle); padding: 9px 4px 8px; margin-bottom: 5px;
+  border-bottom: 1px solid var(--border-default);
 }
 /* 레일 안의 행(소스 탭 · 머신 · 액션)은 같은 골격을 공유해 시선이 한 줄로 흐른다 */
 .rail .src-tab, .machine-row, .rail-action {
@@ -305,13 +314,19 @@ input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px;
 .machine-row .mname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .machine-row .mseen { color: var(--fg-muted); font-size: 10.5px; flex: none; }
 .machine-row .mdot--all { background: transparent; box-shadow: inset 0 0 0 1px var(--fg-muted); }
+/* 세션 액션은 위의 세션 선택에 딸린 동작 — 들여쓰기 + 세로 안내선으로 종속을 보인다 */
+#backfill-session, #delete-session {
+  margin-left: 8px; padding-left: 10px;
+  border-left: 1px solid var(--border-default); border-radius: 0 var(--r-md) var(--r-md) 0;
+}
+#backfill-session:hover, #delete-session:hover { border-left-color: var(--border-accent); }
 .rail-action.danger { color: var(--sem-error); }
 .rail-action.danger:hover { background: rgba(248, 113, 113, .10); color: var(--sem-error); }
-.health-empty { color: var(--fg-muted); font-size: 11.5px; padding: 4px 9px; line-height: 1.5; }
-.rail-field { display: flex; flex-direction: column; gap: 4px; padding: 2px 0 6px; }
+.health-empty { color: var(--fg-muted); font-size: 11.5px; padding: 6px 9px; line-height: 1.5; }
+.rail-field { display: flex; flex-direction: column; gap: 3px; padding: 3px 4px 5px; }
 .rail-field, .rail .rail-label { user-select: none; }
 .rail-field { font-family: var(--font-mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-muted); }
-.rail select { width: 100%; font-family: var(--font-sans); font-size: 12.5px; letter-spacing: -0.01em; text-transform: none; }
+.rail select { width: 100%; margin: 2px 0; font-family: var(--font-sans); font-size: 12.5px; letter-spacing: -0.01em; text-transform: none; }
 
 /* 스크린리더·키보드에는 남기고 화면에서만 감추는 상태 컨트롤(머신/심각도/차단/실패) */
 .sr-only {
