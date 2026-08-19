@@ -118,6 +118,14 @@ def main(argv=None) -> int:
     if sys.stderr is None:
         import os
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    # 한글 Windows 콘솔/파이프는 cp949 라 '—' 같은 문자에서 UnicodeEncodeError 가 나고,
+    # 그 예외가 시작 로그 한 줄 때문에 **서버 전체를 죽인다**(= 프록시가 안 뜸).
+    # 인코딩을 UTF-8/replace 로 낮춰 로그가 절대 서버를 죽이지 못하게 한다.
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     argv = list(sys.argv[1:] if argv is None else argv)
     p = argparse.ArgumentParser(prog="periscribe-proxy", description="Claude API 프록시 서버(독립 실행)")
     p.add_argument("-c", "--config", default=str(_installed_config_path()))

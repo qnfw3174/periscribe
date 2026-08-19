@@ -541,10 +541,18 @@ def _proxy_enable(config_path: Path, port: int = 0) -> tuple[bool, list[str]]:
         return False, out
 
     # 서버 가동 검증(죽은 프록시로 라우팅하면 Claude lockout). 성공해야만 env 라우팅.
-    healthy = proxyguard.port_alive(port) and proxyguard.health_probe(port, str(ca_pem))
+    alive = proxyguard.port_alive(port)
+    healthy = alive and proxyguard.health_probe(port, str(ca_pem))
     if not healthy:
-        out.append("⚠ 프록시 서버가 응답하지 않습니다(미실행/다른 포트).")
-        out.append("  periscribe-proxy.exe 를 실행한 뒤 다시 켜세요(직결 유지).")
+        if alive:
+            # 포트는 열려 있는데 TLS 검증이 실패 = 대개 구버전 CA(SKI 누락)라 엄격 검증이 거부하는 경우.
+            # 프록시 서버를 재시작하면 proxycert 가 CA/리프를 재발급해 스스로 낫는다.
+            out.append(f"⚠ 포트 {port} 는 열려 있으나 프록시 인증서 검증에 실패했습니다(구버전 CA 가능성).")
+            out.append("  periscribe-proxy.exe 를 껐다 켜면 인증서가 재발급됩니다. 그래도 안 되면")
+            out.append(f"  {ca_pem.parent} 의 ca.pem·ca.key 를 지우고 서버를 다시 실행하세요(직결 유지).")
+        else:
+            out.append("⚠ 프록시 서버가 응답하지 않습니다(미실행/다른 포트).")
+            out.append("  periscribe-proxy.exe 를 실행한 뒤 다시 켜세요(직결 유지).")
         return False, out
 
     ca_was_resident = proxyguard.env_has_ca()

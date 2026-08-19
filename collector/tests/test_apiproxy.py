@@ -237,3 +237,44 @@ def test_proxycert_generates_valid(tmp_path):
     paths3 = proxycert.ensure_certs(tmp_path)
     assert open(paths3["ca_pem"], "rb").read() == ca_before   # CA 불변(신뢰 유지)
     assert _os.path.isfile(paths3["server_pem"])              # 리프 재생성
+
+
+def test_proxycert_regenerates_legacy_ca_without_ski(tmp_path):
+    """SKI 없는 구버전 CA 는 통째로 재발급된다.
+
+    엄격 검증(Python 3.13+ create_default_context 기본값)은 SKI 없는 CA 를 무조건 거부하므로,
+    리프만 다시 발급하면 프록시가 떠 있어도 헬스체크가 영원히 실패한다("응답하지 않습니다").
+    """
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    # 구버전 CA(SKI 확장 없음)를 직접 만들어 심는다.
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Periscribe Local CA")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    legacy = (
+        x509.CertificateBuilder()
+        .subject_name(name).issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    (tmp_path / "ca.pem").write_bytes(legacy.public_bytes(serialization.Encoding.PEM))
+    (tmp_path / "ca.key").write_bytes(key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption()))
+
+    paths = proxycert.ensure_certs(tmp_path)
+    ca = x509.load_pem_x509_certificate(open(paths["ca_pem"], "rb").read())
+    assert ca.serial_number != legacy.serial_number                       # CA 가 교체됨
+    ca.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)      # 새 CA 는 SKI 보유
+    server = x509.load_pem_x509_certificate(open(paths["server_pem"], "rb").read())
+    assert server.issuer == ca.subject                                    # 리프도 새 CA 로 재서명

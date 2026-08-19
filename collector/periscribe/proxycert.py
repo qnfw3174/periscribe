@@ -116,9 +116,24 @@ def _leaf_valid(server_pem: Path) -> bool:
         return False
 
 
+def _ca_valid(ca_pem: Path) -> bool:
+    """구버전 CA 판별. SKI 가 없는 CA 는 엄격 검증(Python 3.13+ create_default_context 기본값)에서
+    "Missing Subject Key Identifier" 로 **무조건 거부**된다 → 리프만 재발급해봐야 헬스체크가 계속
+    실패한다(= 프록시가 떠 있는데 '응답하지 않습니다'). 이런 CA 는 통째로 재발급해야 한다."""
+    try:
+        cert = x509.load_pem_x509_certificate(ca_pem.read_bytes())
+        if cert.not_valid_after_utc <= _now() + 30 * _DAY:
+            return False
+        cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)   # 없으면 ExtensionNotFound
+        return True
+    except Exception:
+        return False
+
+
 def ensure_certs(data_dir: Path) -> dict[str, Any]:
     """CA + 리프(127.0.0.1/localhost/host.docker.internal)를 보장하고 경로 dict 반환.
-    CA 가 있으면 재사용(NODE_EXTRA_CA_CERTS 신뢰 유지)하고 리프만 필요 시 재발급. 반환: {ca_pem, server_pem, server_key}."""
+    쓸 수 있는 CA 는 재사용(NODE_EXTRA_CA_CERTS 신뢰 유지)하고 리프만 필요 시 재발급.
+    반환: {ca_pem, server_pem, server_key}."""
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     ca_pem = data_dir / "ca.pem"
@@ -126,8 +141,9 @@ def ensure_certs(data_dir: Path) -> dict[str, Any]:
     server_pem = data_dir / "server.pem"
     server_key = data_dir / "server.key"
 
-    if not (ca_pem.is_file() and ca_key.is_file()):
-        # CA 없음 → CA + 리프 새로 생성.
+    if not (ca_pem.is_file() and ca_key.is_file() and _ca_valid(ca_pem)):
+        # CA 없음/만료임박/SKI 누락(구버전) → CA + 리프 새로 생성.
+        # 신뢰 파일 경로(ca.pem)는 그대로라 다음 Claude 세션부터 새 CA 를 자동으로 신뢰한다.
         ca_cert, ca_priv = _gen_ca(ca_pem, ca_key)
         _gen_leaf(server_pem, server_key, ca_cert, ca_priv)
     elif not (server_pem.is_file() and server_key.is_file() and _leaf_valid(server_pem)):
