@@ -20,4 +20,4 @@
 전체 아키텍처는 docs/ARCHITECTURE.md 참고.
 """
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"

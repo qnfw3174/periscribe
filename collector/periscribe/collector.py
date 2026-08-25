@@ -81,6 +81,12 @@ class Collector:
         if self._log_path:
             Path(self._log_path).parent.mkdir(parents=True, exist_ok=True)
 
+        # 로컬 상태 파일. 컨트롤 패널이 "정말 적재되고 있는가"를 읽는 유일한 창구.
+        # 하트비트(last_error)는 서버에 닿아야 보이므로 401/네트워크 단절이면 영영 안 보인다 → 로컬에도 남긴다.
+        self._status_path = Path(config.checkpoint_path).with_name("status.json")
+        self._sent_total = 0
+        self._last_sent_at = ""
+
         # 재시작 시 이미 DEK가 있으면 sink에 주입(공개키는 첫 하트비트에 갱신·재봉인).
         if self._enc_required and config.dek:
             try:
@@ -351,6 +357,29 @@ class Collector:
     def _set_error(self, msg: str) -> None:
         self._last_error = msg
 
+    def _write_status(self, state: str) -> None:
+        """현재 적재 상태를 로컬에 원자적으로 기록. 실패해도 수집은 계속(베스트에포트).
+        state: ok | auth | error | holding | stopped"""
+        try:
+            import json as _json
+            self._status_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._status_path.with_suffix(".tmp")
+            tmp.write_text(_json.dumps({
+                "state": state,
+                "last_error": self._last_error,
+                "auth_fail": self._auth_fail,
+                "auth_fail_max": self._auth_fail_max,
+                "sent_total": self._sent_total,
+                "last_sent_at": self._last_sent_at,
+                "machine_id": self.config.machine_id,
+                "version": __version__,
+                "pid": os.getpid(),
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self._status_path)
+        except Exception:
+            pass
+
     def _interruptible_sleep(self, secs: float) -> None:
         """길어도 종료(_running=False)에 빨리 반응하도록 잘게 나눠 잔다."""
         end = time.time() + max(0.0, secs)
@@ -388,6 +417,7 @@ class Collector:
                         self._log("[periscribe] 암호화 키 대기 중(웹에서 암호화 설정 필요) → 적재 보류")
                         self._enc_hold_logged = True
                     self._last_error = "암호화 키 대기 중 — 적재 보류"
+                    self._write_status("holding")
                     self._interruptible_sleep(self.config.poll_interval)
                     continue
                 self._enc_hold_logged = False
@@ -421,6 +451,8 @@ class Collector:
                         iter_error = f"파일 처리 오류: {e}"
                         self._log(f"[periscribe] 파일 처리 오류 {fp}: {e}")
                 if total:
+                    self._sent_total += total
+                    self._last_sent_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                     self._log(f"[periscribe] +{total} events")
                 if backfill_ids:
                     self._apply_backfill(backfill_ids)
@@ -435,10 +467,12 @@ class Collector:
                     self._last_drop_seen = drop
                     iter_error = iter_error or drop
                 self._last_error = iter_error or ""
+                self._write_status("error" if self._last_error else "ok")
             except SinkAuthError as e:
                 self._auth_fail += 1
                 self._set_error(f"인증 거부(revoked/삭제?): {e}")
                 self._log(f"[periscribe] 401 인증 거부 #{self._auth_fail}/{self._auth_fail_max}: {e}")
+                self._write_status("auth")
                 if self._auth_fail >= self._auth_fail_max:
                     self._log("[periscribe] 토큰이 무효(revoked/삭제)로 판단 → 수집기 종료.")
                     self._running = False
@@ -450,6 +484,7 @@ class Collector:
                 self._log(f"[periscribe] 루프 오류: {e}")
             self._interruptible_sleep(self.config.poll_interval)
 
+        self._write_status("stopped")
         self._log("[periscribe] 종료")
 
     def stop(self, *_: Any) -> None:

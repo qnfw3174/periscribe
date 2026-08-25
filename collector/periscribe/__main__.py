@@ -157,6 +157,49 @@ def _is_installed() -> bool:
         return False
 
 
+def _collector_status() -> dict:
+    """컬렉터가 남긴 로컬 상태(status.json). 없으면 빈 dict.
+    하트비트 last_error 는 서버에 닿아야 보이므로 401/네트워크 단절에서는 이 파일이 유일한 근거."""
+    try:
+        # 컬렉터는 checkpoint_path 옆에 status.json 을 쓴다 — 커스텀 경로도 그대로 따라간다.
+        cfgp = _installed_config_path()
+        cp = ""
+        if cfgp.is_file():
+            cp = (json.loads(cfgp.read_text(encoding="utf-8-sig")) or {}).get("checkpoint_path") or ""
+        p = (Path(cp).with_name("status.json") if cp
+             else _data_dir() / "checkpoints" / "status.json")
+        if not p.is_file():
+            return {}
+        return json.loads(p.read_text(encoding="utf-8-sig")) or {}
+    except Exception:
+        return {}
+
+
+def _collector_status_text(st: dict) -> tuple[str, str, str]:
+    """(라벨, 상세, 색키) — 색키는 ok|warn|err|muted."""
+    if not st:
+        return ("수집 상태 확인 중…", "컬렉터가 아직 첫 바퀴를 돌지 않았습니다.", "muted")
+    state = str(st.get("state") or "")
+    err = str(st.get("last_error") or "")
+    sent = st.get("sent_total") or 0
+    seen = str(st.get("last_sent_at") or "")
+    if state == "auth":
+        n, mx = st.get("auth_fail") or 0, st.get("auth_fail_max") or 10
+        return ("⚠ 토큰 거부됨 — 적재 안 됨",
+                f"서버가 이 머신의 토큰을 거부했습니다({n}/{mx}). 웹 [⚙ 머신 관리]에서 토큰을 "
+                f"다시 발급한 뒤 아래 '토큰 다시 입력'을 누르세요.", "err")
+    if state == "holding":
+        return ("⏸ 적재 보류 — 암호화 키 대기",
+                "웹에서 암호화(키 셋업)를 먼저 마쳐야 적재가 시작됩니다. 평문 전송은 하지 않습니다.", "warn")
+    if state == "stopped":
+        return ("■ 수집기 중지됨", err or "컬렉터 프로세스가 종료됐습니다.", "err")
+    if state == "error":
+        return ("⚠ 수집 중(오류 있음)", err, "warn")
+    if state == "ok":
+        return (f"● 수집 중 · 누적 {sent}건", f"마지막 적재 {seen or '아직 없음'}", "ok")
+    return (f"수집 상태: {state or '알 수 없음'}", err, "muted")
+
+
 def _hide_console() -> None:
     """백그라운드(작업 스케줄러) 실행 시 콘솔 창을 숨긴다. console exe라 로그온 시 잠깐 떴다 사라짐."""
     if os.name != "nt":
@@ -342,6 +385,18 @@ def install(token: str, name: str = "", url: str = "", *,
         )
     data = Path(data_dir) if data_dir else _data_dir()
     config_path = data / "config.json"
+    # 재설치(토큰 교체)로 다른 명령이 켜 둔 기능 토글이 날아가지 않게 보존.
+    # (proxy on → api_log_enabled/api_proxy_port, audit-setup → os_exec_*)
+    keep: dict = {}
+    if config_path.is_file():
+        try:
+            prev = json.loads(config_path.read_text(encoding="utf-8-sig")) or {}
+            for k in ("api_log_enabled", "api_proxy_port", "os_exec_enabled",
+                      "os_exec_log", "os_exec_root_patterns", "os_exec_deny_images"):
+                if k in prev:
+                    keep[k] = prev[k]
+        except Exception:
+            keep = {}
     cfg = {
         "watch_dir": "", "machine_id": name, "poll_interval": 0.4,
         # 컨테이너(devcontainer) transcript 루트. devcontainer.json이 컨테이너의
@@ -353,6 +408,7 @@ def install(token: str, name: str = "", url: str = "", *,
         "backfill": 0, "store_raw": False, "store_thinking": False, "redact": True,
         "heartbeat_interval": 30, "log_file": str(data / "logs" / "collector.log"),
         "log_max_bytes": 5000000, "log_backups": 3,
+        **keep,
     }
     # 등록할 명령(개별 onefile exe: 실행 중인 위치를 자동시작에 등록 → 자가치유로 위치 추종).
     if exe:
@@ -950,8 +1006,32 @@ def gui_panel() -> int:
 
     ctk.CTkLabel(card, text="⌖  Periscribe",
                  font=ctk.CTkFont(size=19, weight="bold")).pack(anchor="w", pady=(22, 2), **pad)
-    ctk.CTkLabel(card, text=f"머신 {cfg0.machine_id} · 수집 중(백그라운드)", text_color=MUTED,
-                 font=ctk.CTkFont(size=12)).pack(anchor="w", pady=(0, 16), **pad)
+    ctk.CTkLabel(card, text=f"머신 {cfg0.machine_id}", text_color=MUTED,
+                 font=ctk.CTkFont(size=12)).pack(anchor="w", pady=(0, 10), **pad)
+
+    # 수집 상태는 고정 문구가 아니라 컬렉터가 남긴 status.json 을 읽어 보여준다.
+    # (토큰이 거부돼 한 건도 못 올리는 중에도 '수집 중'으로 보이던 문제)
+    coll_lbl = ctk.CTkLabel(card, text="수집 상태 확인 중…", font=ctk.CTkFont(size=14, weight="bold"))
+    coll_lbl.pack(anchor="w", **pad)
+    coll_detail = ctk.CTkLabel(card, text="", text_color=MUTED, font=ctk.CTkFont(size=11),
+                               wraplength=360, justify="left")
+    coll_detail.pack(anchor="w", pady=(2, 8), **pad)
+
+    def _retoken() -> None:
+        """토큰 다시 입력 창을 별도 프로세스로. 패널은 그대로 두고(트레이 상주) 설치창만 띄운다."""
+        try:
+            if getattr(sys, "frozen", False):
+                subprocess.Popen([sys.executable, "setup-gui"], env=_child_env(), close_fds=True)
+            else:
+                subprocess.Popen([sys.executable, "-m", "periscribe", "setup-gui"],
+                                 env=_child_env(), close_fds=True)
+        except Exception as e:  # noqa: BLE001
+            coll_detail.configure(text=f"설치 창을 열지 못했습니다: {e}", text_color=ERRC)
+
+    retoken_btn = ctk.CTkButton(card, text="토큰 다시 입력", height=32, corner_radius=8,
+                                font=ctk.CTkFont(size=12), fg_color="#232833",
+                                hover_color="#2c3240", text_color="#c9d1e1", command=_retoken)
+    retoken_btn.pack(fill="x", pady=(0, 16), **pad)
 
     ctk.CTkLabel(card, text="🛰  Claude API 프록시 (라우팅)", text_color=MUTED,
                  font=ctk.CTkFont(size=12)).pack(anchor="w", **pad)
@@ -973,6 +1053,13 @@ def gui_panel() -> int:
     ui = {"busy": False, "tray": None}
 
     def refresh() -> None:
+        label, detail, key = _collector_status_text(_collector_status())
+        coll_lbl.configure(text=label, text_color={"ok": OKC, "warn": WARN,
+                                                   "err": ERRC, "muted": MUTED}[key])
+        coll_detail.configure(text=detail)
+        retoken_btn.configure(fg_color=(ACCENT if key == "err" else "#232833"),
+                              hover_color=(ACCENT_H if key == "err" else "#2c3240"),
+                              text_color=(INK if key == "err" else "#c9d1e1"))
         try:
             s = _proxy_status(cfgpath)
         except Exception as e:  # noqa: BLE001
@@ -1129,7 +1216,16 @@ def gui_panel() -> int:
 
     app.protocol("WM_DELETE_WINDOW", _to_tray)              # X 버튼 → 트레이
 
+    def _tick() -> None:
+        if not ui["busy"]:
+            try:
+                refresh()
+            except Exception:
+                pass
+        app.after(3000, _tick)
+
     refresh()
+    app.after(3000, _tick)
     app.update_idletasks()
     w, h = app.winfo_width(), app.winfo_height()
     x = (app.winfo_screenwidth() - w) // 2
@@ -1171,6 +1267,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_audit_setup(argv[1:])
     if argv and argv[0] == "panel":
         return gui_panel()                  # 트레이 컨트롤 패널(--tray 면 트레이 최소화로 시작)
+    if argv and argv[0] == "setup-gui":
+        return gui_setup()                  # 설치 후에도 토큰만 다시 넣는 창(패널 → '토큰 다시 입력')
     if argv and argv[0] == "proxy":
         return cmd_proxy(argv[1:])          # 헤드리스 라우팅 토글(on|off|toggle|status)
     if argv and argv[0] == "guardian-run":

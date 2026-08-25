@@ -3,7 +3,7 @@
 ; onedir(dist\periscribe-agent)을 %LOCALAPPDATA%\Programs\Periscribe Agent 에 설치.
 
 #define MyAppName "Periscribe Agent"
-#define MyAppVersion "0.2.1"
+#define MyAppVersion "0.2.2"
 ; 경로는 이 .iss 파일 위치 기준(SourcePath)으로 잡는다 — 빌드하는 사람의 체크아웃 위치에 무관해야 한다.
 #define PkgDir RemoveBackslash(SourcePath)
 #define DistDir PkgDir + "\dist\periscribe-agent"
